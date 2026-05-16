@@ -15,7 +15,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "scenario": "tsx src/scenarios/cli.ts",
+    "scenario:goblin-hunt": "tsx src/scenarios/cli.ts goblin-hunt"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
