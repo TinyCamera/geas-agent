@@ -41,6 +41,7 @@ import {
   ok,
   makeError,
 } from './errors.js';
+import type { AgentBinding } from '../binding/index.js';
 import {
   GEAS_TOOL_NAMES,
   type GeasToolName,
@@ -84,18 +85,33 @@ export interface GeasMcpClientOptions {
    * construction (but still surfaced to consumers via getters).
    */
   transportFactory?: () => Transport;
+  /**
+   * The agent's binding context — which character this process is driving and
+   * under what mode. When set, every `callTool` invocation carries the binding
+   * fields under an `_agentBinding` key inside the tool args; the wrapper also
+   * advertises the binding via `X-Geas-Agent-Entity` / `X-Geas-Agent-Mode`
+   * headers on the underlying StreamableHTTP transport so server-side logs +
+   * future per-request enforcement (today the enforcement gate is on the
+   * EntitySchema's `bindingMode`, set at character creation — but logs / drift
+   * detection benefit from per-request visibility too).
+   *
+   * Bindings are constructed via `createBinding()` from the `binding` module;
+   * see that file for the design rationale.
+   */
+  binding?: AgentBinding;
 }
 
 type ResolvedOptions = Required<
   Omit<
     GeasMcpClientOptions,
-    'devUid' | 'bearerToken' | 'onWarning' | 'transportFactory'
+    'devUid' | 'bearerToken' | 'onWarning' | 'transportFactory' | 'binding'
   >
 > & {
   devUid?: string;
   bearerToken?: string;
   onWarning: (message: string, detail?: unknown) => void;
   transportFactory?: () => Transport;
+  binding?: AgentBinding;
 };
 
 const DEFAULTS = {
@@ -132,7 +148,19 @@ export class GeasMcpClient {
       bearerToken: options.bearerToken,
       onWarning: options.onWarning ?? (() => {}),
       transportFactory: options.transportFactory,
+      binding: options.binding,
     };
+  }
+
+  /**
+   * The current binding (or `undefined` if the client was constructed without
+   * one). Bindings are immutable values — to change which character this
+   * client drives, build a new `GeasMcpClient` with a fresh binding rather
+   * than mutating in place. Single-character per process is the documented
+   * constraint (see `binding/binding.ts`).
+   */
+  get binding(): AgentBinding | undefined {
+    return this.opts.binding;
   }
 
   /** True when connected to the server and the tool surface check passed. */
@@ -253,7 +281,7 @@ export class GeasMcpClient {
         const client = this.client!;
         try {
           const raw = await callWithTimeout(
-            client.callTool({ name, arguments: args }),
+            client.callTool({ name, arguments: this.injectBinding(args) }),
             this.opts.requestTimeoutMs,
             options.signal,
           );
@@ -368,9 +396,41 @@ export class GeasMcpClient {
     const headers: Record<string, string> = {};
     if (this.opts.bearerToken) headers['Authorization'] = `Bearer ${this.opts.bearerToken}`;
     if (this.opts.devUid) headers['X-Geas-Dev-Uid'] = this.opts.devUid;
+    if (this.opts.binding) {
+      // Advertise the binding to the server for log attribution. Server-side
+      // enforcement today reads `bindingMode` from the EntitySchema (see
+      // `geas-server/packages/server/src/rooms/GameRoom.ts`), so these headers
+      // are informational — but they make per-request audit possible and give
+      // future per-request enforcement a hook without another wrapper bump.
+      headers['X-Geas-Agent-Entity'] = this.opts.binding.entityId;
+      headers['X-Geas-Agent-Owner'] = this.opts.binding.ownerUid;
+      headers['X-Geas-Agent-Mode'] = this.opts.binding.bindingMode;
+    }
     return new StreamableHTTPClientTransport(new URL(this.opts.url), {
       requestInit: { headers },
     });
+  }
+
+  /**
+   * Augment outgoing tool args with the binding context under a reserved
+   * `_agentBinding` key. The geas-server MCP layer ignores unknown args today
+   * (every tool's Zod schema only validates declared fields), so this is
+   * forward-compatible: when server-side per-request enforcement lands it can
+   * read the envelope, and until then the field is harmless. Callers that
+   * happen to use `_agentBinding` for their own purposes get their value
+   * preserved — the binding does not silently overwrite.
+   */
+  private injectBinding(args: Record<string, unknown>): Record<string, unknown> {
+    if (!this.opts.binding) return args;
+    if ('_agentBinding' in args) return args;
+    return {
+      ...args,
+      _agentBinding: {
+        entityId: this.opts.binding.entityId,
+        ownerUid: this.opts.binding.ownerUid,
+        bindingMode: this.opts.binding.bindingMode,
+      },
+    };
   }
 
   private backoffDelay(attempt: number): number {
