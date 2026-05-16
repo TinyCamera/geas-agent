@@ -23,6 +23,15 @@ export {
   type GeasToolName,
   type GeasToolResponse,
 } from "./mcp/index.js";
+export {
+  BINDING_MODES,
+  type BindingMode,
+  type AgentBinding,
+  type CreateBindingInput,
+  createBinding,
+  isBindingMode,
+  isAgentControlled,
+} from "./binding/index.js";
 
 const banner = "geas-agent online — MCP client ready";
 
