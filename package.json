@@ -14,9 +14,13 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "lint": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
