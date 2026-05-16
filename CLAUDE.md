@@ -10,17 +10,25 @@ This repo is a **sibling** of `geas-server`. Shared conventions live in `geas-se
 
 ## Status
 
-Scaffold only as of 2026-05-14. Real work (LLM provider, agent loop, identity, deploy) lives in epics #584/#586/#587/#588/#589/#590 on the geas-server backlog.
+MCP client wrapper (#579) shipped 2026-05-16 — `GeasMcpClient` is the canonical entry point for talking to geas-server's MCP endpoint. Real LLM-driven agent loop (provider, identity, deploy) lives in epics #584/#586/#587/#588/#589/#590 on the geas-server backlog.
+
+## Architecture
+
+- `src/mcp/client.ts` — `GeasMcpClient`, the thin wrapper over `@modelcontextprotocol/sdk`'s `Client`. Reconnect-on-drop with capped exponential backoff; returns `Result<T>` instead of throwing.
+- `src/mcp/tools.ts` — hand-written `GEAS_TOOL_NAMES` list + arg shapes. Drift detected at connect time via `listTools()` (missing tool → error, extra → warning).
+- `src/mcp/errors.ts` — `GeasMcpError` discriminated union: `not_connected | transport | unauthorized | tool_error | invalid_response | timeout | aborted`.
+- `tests/integration/` — live-server tests, opt-in via `npm run test:integration` with `GEAS_LIVE_MCP_URL` + `GEAS_LIVE_DEV_UID` env set.
 
 ## Commands
 
 ```bash
-npm install       # install deps
-npm test          # vitest run (all tests)
+npm install            # install deps
+npm test               # vitest run (unit tests under src/)
 npm run test:watch
-npm run build     # tsc to dist/
-npm run dev       # tsx watch on src/index.ts
-npm run lint      # tsc --noEmit
+npm run test:integration  # opt-in; needs GEAS_LIVE_MCP_URL + GEAS_LIVE_DEV_UID
+npm run build          # tsc to dist/
+npm run dev            # tsx watch on src/index.ts
+npm run lint           # tsc --noEmit
 ```
 
 ## Conventions
