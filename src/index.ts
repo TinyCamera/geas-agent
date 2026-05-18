@@ -32,6 +32,37 @@ export {
   isBindingMode,
   isAgentControlled,
 } from "./binding/index.js";
+export {
+  type CacheControl,
+  type TextBlock,
+  type ToolUseBlock,
+  type ToolResultBlock,
+  type ContentBlock,
+  type LlmRole,
+  type LlmMessage,
+  type LlmToolDef,
+  type StopReason,
+  type LlmUsage,
+  type GenerateRequest,
+  type GenerateResult,
+  type LlmErrorKind,
+  type LlmError,
+  type LlmOk,
+  type LlmErr,
+  type LlmResult,
+  type StreamEvent,
+  type LlmProvider,
+  llmOk,
+  llmErr,
+  makeLlmError,
+  isTextBlock,
+  isToolUseBlock,
+  isToolResultBlock,
+  ZERO_USAGE,
+  NoopProvider,
+  type NoopProviderOptions,
+  type ScriptedTurn,
+} from "./llm/index.js";
 
 const banner = "geas-agent online — MCP client ready";
 
