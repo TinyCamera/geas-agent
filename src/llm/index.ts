@@ -32,3 +32,10 @@ export {
   type NoopProviderOptions,
   type ScriptedTurn,
 } from './noop.js';
+
+export {
+  AnthropicProvider,
+  type AnthropicProviderOptions,
+  type AnthropicLike,
+  DEFAULT_ANTHROPIC_MODEL,
+} from './anthropic.js';
