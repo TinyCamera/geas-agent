@@ -36,6 +36,7 @@ GEAS_MCP_URL=http://localhost:8088/mcp GEAS_DEV_UID=agent-dev npm run scenario:g
 
 - **MCP client** — connects to deployed (or local) geas-server's MCP endpoint.
 - **LLM provider layer** — pluggable; first integration TBD between Anthropic (cached Haiku 4.5) and Google (Gemini Flash 2.5). See [#585](https://github.com/tinycamera/geas-server/issues/585).
+- **Prompt cache layout** — caching is the dominant cost lever (the naïve protocol misses Niall's <$0.05/active-hr gate). `buildCachedRequest()` in `src/llm/cache.ts` owns breakpoint placement: tool defs, system persona, and a stable game-state prefix are cached; the per-turn churn is not. Full layout + invalidation rules: [docs/cache-layout.md](docs/cache-layout.md).
 - **Conversation state** — Firestore (consistent with geas-server).
 - **Identity** — agent acts under the user's UID; harness stores user OAuth refresh tokens server-side.
 
