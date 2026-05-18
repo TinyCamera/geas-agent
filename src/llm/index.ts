@@ -39,3 +39,10 @@ export {
   type AnthropicLike,
   DEFAULT_ANTHROPIC_MODEL,
 } from './anthropic.js';
+
+export {
+  buildCachedRequest,
+  countCacheBreakpoints,
+  MAX_CACHE_BREAKPOINTS,
+  type BuildCachedRequestInput,
+} from './cache.js';
