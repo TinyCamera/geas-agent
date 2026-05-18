@@ -18,6 +18,20 @@ npm run build
 npm run dev
 ```
 
+## Local dev runbook
+
+geas-agent drives a character through geas-server's MCP endpoint, so running
+it locally means standing up the geas-server stack too. The full
+fresh-checkout path — prerequisites, starting the geas-server stack with the
+dev auth bypass, env vars, and getting `npm run scenario:goblin-hunt` to exit
+green — is in **[docs/dev.md](docs/dev.md)**.
+
+Quickest path once the geas-server stack is up on `:8088`:
+
+```bash
+GEAS_MCP_URL=http://localhost:8088/mcp GEAS_DEV_UID=agent-dev npm run scenario:goblin-hunt
+```
+
 ## Architecture
 
 - **MCP client** — connects to deployed (or local) geas-server's MCP endpoint.
