@@ -46,3 +46,22 @@ export {
   MAX_CACHE_BREAKPOINTS,
   type BuildCachedRequestInput,
 } from './cache.js';
+
+export {
+  MODEL_PRICES,
+  priceFor,
+  computeCostUsd,
+  type ModelPrice,
+  type CostBreakdownUsd,
+} from './pricing.js';
+
+export {
+  TelemetryProvider,
+  CostAggregator,
+  jsonlSink,
+  arraySink,
+  type TelemetryRecord,
+  type TelemetrySink,
+  type TelemetryProviderOptions,
+  type CostSummary,
+} from './telemetry.js';
