@@ -65,6 +65,27 @@ interface ActResponse {
 const MAX_COMBAT_ROUNDS = 40; // Hard cap; a fresh character usually downs a goblin in <15.
 const RETREAT_HP_FRACTION = 0.3;
 const ACTION_PAUSE_MS = 200; // Brief breather so the server's tick (20 Hz) advances between calls.
+const POST_TELEPORT_SETTLE_MS = 600; // ChunkManager activates new chunks on the next world tick;
+                                     // give it a few ticks to populate before re-asking for entities.
+
+/**
+ * #632 — fallback teleport target when the spawn fog is empty.
+ *
+ * Bramble Hollow (the canonical village spawn) lives at world-tile
+ * (544, 608) in Heartlands which has no hostile spawns. The Wilds
+ * region (cy 4..7, i.e. world y in roughly [256, 512)) is the closest
+ * goblin-bearing band — every Wilds chunk seeds ~3 enemies including
+ * goblins (see geas-server `REGION_SPAWN_CONFIGS.WILDS`).
+ *
+ * Hardcoded coords are deliberate for v1: the scenario already hardcodes
+ * "spawn position == Bramble Hollow" in its return-to-spawn step, and
+ * the canonical world layout is part of the same #418/#420 contract
+ * these coordinates pin against. If the world layout drifts, the live
+ * integration test in `tests/integration/` will catch it.
+ */
+const HUNT_TELEPORT_X = 544; // Same column as Bramble Hollow.
+const HUNT_TELEPORT_Y = 460; // ~150 tiles north — deep enough into the Wilds
+                             // band that the fog radius doesn't straddle Heartlands.
 
 async function readPlayerState(
   client: Parameters<Scenario>[0]['client'],
@@ -80,6 +101,19 @@ async function readPlayerState(
     isAlive: s.isAlive !== false,
     inCombat: s.inCombat === true,
   };
+}
+
+async function findGoblins(
+  client: Parameters<Scenario>[0]['client'],
+): Promise<EnemyHit[]> {
+  const resp = unwrap(
+    'entities(ENEMY)',
+    await client.entities({ type: 'ENEMY', aliveOnly: true, excludeBoss: true }),
+  );
+  const data = structured<EntitiesResponse>(resp);
+  return (data?.entities ?? []).filter(
+    (e) => e.spriteKey === 'goblin' && e.isAlive !== false && !e.isBoss,
+  );
 }
 
 function numberField(obj: Record<string, unknown>, key: string): number {
@@ -106,17 +140,43 @@ export const goblinHunt: Scenario = async ({ client, logger, signal }) => {
   // post-filter on `spriteKey === 'goblin'`. (`nearest` returns at most one
   // entity, which might be an orc; pulling the whole enemy list and filtering
   // is cheap inside the fog radius.)
-  const enemyResp = unwrap(
-    'entities(ENEMY)',
-    await client.entities({ type: 'ENEMY', aliveOnly: true, excludeBoss: true }),
-  );
-  const enemyData = structured<EntitiesResponse>(enemyResp);
-  const goblins = (enemyData?.entities ?? []).filter(
-    (e) => e.spriteKey === 'goblin' && e.isAlive !== false && !e.isBoss,
-  );
+  let goblins = await findGoblins(client);
   if (goblins.length === 0) {
-    logger.warn('no goblin in fog-of-war range; scenario ends idle (success)');
-    return;
+    // #632 — the canonical fresh-stack spawn is Bramble Hollow village
+    // center, which lives in Heartlands and has NO hostile spawns. The
+    // old behaviour ("scenario ends idle (success)") was a hollow green
+    // for a scenario named "goblin-hunt". Use the dev-only `set_position`
+    // teleport to drop into the Wilds and resume the hunt.
+    if (typeof client.hasTool === 'function' && client.hasTool('set_position')) {
+      logger.info(
+        `no goblin in fog-of-war range from spawn — teleporting to (${HUNT_TELEPORT_X},${HUNT_TELEPORT_Y}) (Wilds) via set_position`,
+      );
+      const tpResp = await client.setPosition({ x: HUNT_TELEPORT_X, y: HUNT_TELEPORT_Y });
+      if (!tpResp.ok) {
+        throw new Error(
+          `set_position failed: ${tpResp.error.kind} — ${tpResp.error.message}`,
+        );
+      }
+      // Let ChunkManager activate the destination chunks before re-asking.
+      await sleep(POST_TELEPORT_SETTLE_MS, signal);
+      goblins = await findGoblins(client);
+      if (goblins.length === 0) {
+        throw new Error(
+          `no goblin in fog-of-war range after teleport to (${HUNT_TELEPORT_X},${HUNT_TELEPORT_Y}); ` +
+            'the Wilds region should always have goblins. Check geas-server REGION_SPAWN_CONFIGS / world seed.',
+        );
+      }
+    } else {
+      // Without the dev tool we have no clean way to get within fog of a
+      // goblin from village center (the closest goblin band is ~100+
+      // tiles away — too far for a deterministic walk). Surface as a
+      // real failure rather than a hollow success.
+      throw new Error(
+        'no goblin in fog-of-war range, and set_position is not available — ' +
+          'is geas-server running with GEAS_DEV_UNAUTH=1? ' +
+          'See geas-agent/docs/dev.md for the local-stack setup.',
+      );
+    }
   }
   // Sort by Manhattan distance ascending; server already attaches `distance`.
   goblins.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));

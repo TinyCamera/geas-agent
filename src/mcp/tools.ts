@@ -65,6 +65,29 @@ export const GEAS_TOOL_NAMES = [
 
 export type GeasToolName = (typeof GEAS_TOOL_NAMES)[number];
 
+/**
+ * Dev-only tools registered on geas-server when `GEAS_DEV_UNAUTH=1` is set
+ * (matching env gate at all three layers — tool registration, HTTP `/action`,
+ * and the WS handler). These are typed for callers that want first-class
+ * access during local scenarios / playtests, but intentionally NOT in
+ * `GEAS_TOOL_NAMES` — production geas-server doesn't register them, so the
+ * connect-time drift check would fail if they were treated as required.
+ * Callers that need them (e.g. the goblin-hunt scenario teleporting to a
+ * goblin-rich area) probe the server's tool list at connect time and skip
+ * the tool gracefully when absent.
+ */
+export const GEAS_DEV_TOOL_NAMES = [
+  'set_stats',
+  'grant_skill',
+  'grant_item',
+  'clear_consumable_cooldowns',
+  'set_hp',
+  'set_mana',
+  'set_position',
+] as const;
+
+export type GeasDevToolName = (typeof GEAS_DEV_TOOL_NAMES)[number];
+
 // ---------------------------------------------------------------------------
 // Argument shapes — only the tools we expose as first-class typed methods on
 // the wrapper. Everything else goes through `callTool(name, args)` which is
@@ -140,6 +163,16 @@ export interface CreateCharacterArgs {
 
 export interface SwitchCharacterArgs {
   playerId: string;
+}
+
+/**
+ * Args for the dev-only `set_position` tool (#632). Teleports the calling
+ * player to world-tile (`x`, `y`). See geas-server `SetPositionHandler` for
+ * validation: bounds + walkable + out-of-combat + env gate.
+ */
+export interface SetPositionArgs {
+  x: number;
+  y: number;
 }
 
 /**

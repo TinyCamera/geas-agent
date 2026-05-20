@@ -37,6 +37,15 @@ interface StubScript {
   goblin: StubGoblin | null;
   /** Per-attack: how much damage we take, and how much damage we deal. */
   onAttack: () => { takeDamage: number; dealDamage: number };
+  /**
+   * If set, the stub server pretends the `set_position` dev tool is
+   * registered. When `goblinAfterTeleport` is also set, the goblin
+   * is "spawned" into visible range as soon as `set_position` succeeds
+   * — simulating the canonical fresh-stack case where the village-center
+   * spawn has no goblins in fog, but a teleport into the Wilds reveals one.
+   */
+  hasSetPosition?: boolean;
+  goblinAfterTeleport?: StubGoblin | null;
 }
 
 function structuredResp(structured: Record<string, unknown>): GeasToolResponse {
@@ -124,6 +133,26 @@ function makeStubClient(script: StubScript): {
       }
       return ok(structuredResp({ results: [{ status: 'ok' }] }));
     },
+    hasTool(name: string): boolean {
+      if (name === 'set_position') return script.hasSetPosition === true;
+      return true;
+    },
+    async setPosition(args: unknown): Promise<Result<GeasToolResponse>> {
+      calls.push({ tool: 'set_position', args });
+      const { x, y } = args as { x: number; y: number };
+      script.player.gridX = x;
+      script.player.gridY = y;
+      // Reveal the post-teleport goblin (if scripted) — this is the
+      // canonical "village center has no goblins but Wilds does" case.
+      if (script.goblinAfterTeleport !== undefined) {
+        script.goblin = script.goblinAfterTeleport;
+      }
+      return ok(
+        structuredResp({
+          events: [{ type: 'position_set', data: { x, y } }],
+        }),
+      );
+    },
   };
   return { client: stub as unknown as GeasMcpClient, calls };
 }
@@ -193,18 +222,57 @@ describe('goblinHunt scenario', () => {
     expect(moveCall).toBeUndefined();
   });
 
-  it('exits cleanly when no goblin is visible', async () => {
+  it('teleports into goblin territory when no goblin is visible and set_position is available (#632)', async () => {
+    // Canonical fresh-stack case: scenario character spawns at Bramble
+    // Hollow village center (Heartlands — no hostile spawns), no goblin
+    // in fog. With `set_position` available, the scenario must teleport
+    // into a goblin-rich region and resume the hunt — NOT exit idle.
     const script: StubScript = {
-      player: { gridX: 5, gridY: 5, health: 100, maxHealth: 100, isAlive: true, inCombat: false },
+      player: { gridX: 544, gridY: 608, health: 100, maxHealth: 100, isAlive: true, inCombat: false },
       goblin: null,
-      onAttack: () => ({ takeDamage: 0, dealDamage: 0 }),
+      hasSetPosition: true,
+      goblinAfterTeleport: { id: 'g-wilds', gridX: 546, gridY: 462, alive: true },
+      onAttack: () => ({ takeDamage: 5, dealDamage: 60 }),
     };
     const { client, calls } = makeStubClient(script);
     const log = createBufferLogger();
+    // Mirror autoApproach pulling the player into range after the first swing.
+    let attacksSeen = 0;
+    const origAttack = script.onAttack;
+    script.onAttack = () => {
+      attacksSeen++;
+      if (attacksSeen === 1) {
+        script.player.gridX = 546;
+        script.player.gridY = 462;
+      }
+      return origAttack();
+    };
     await goblinHunt({ client, binding, logger: log });
-    // No attack calls — went straight from nearest-miss to clean exit.
-    expect(calls.filter((c) => c.tool === 'act').length).toBe(0);
-    expect(log.entries.some((e) => /no goblin/i.test(e.message))).toBe(true);
+    // Scenario teleported.
+    const tpCall = calls.find((c) => c.tool === 'set_position');
+    expect(tpCall, 'expected set_position to be called when fog is empty').toBeDefined();
+    // Scenario engaged the goblin and dealt non-zero damage (this is the
+    // core #632 acceptance: not idle, actually hunts).
+    expect(attacksSeen, 'scenario must issue at least one attack intent').toBeGreaterThan(0);
+    expect(script.goblin?.alive, 'scenario must deal non-zero damage (kill the goblin)').toBe(false);
+  });
+
+  it('fails loudly when no goblin is visible and set_position is unavailable (#632)', async () => {
+    // Prod-like: the dev-only `set_position` is not registered. We used to
+    // exit `0` here ("benign early return — green"), which was a hollow
+    // green for a scenario named "goblin-hunt". Contract now: throw, so
+    // the runner surfaces a real failure.
+    const script: StubScript = {
+      player: { gridX: 544, gridY: 608, health: 100, maxHealth: 100, isAlive: true, inCombat: false },
+      goblin: null,
+      hasSetPosition: false,
+      onAttack: () => ({ takeDamage: 0, dealDamage: 0 }),
+    };
+    const { client } = makeStubClient(script);
+    const log = createBufferLogger();
+    await expect(goblinHunt({ client, binding, logger: log })).rejects.toThrow(
+      /no goblin/i,
+    );
   });
 
   it('throws when scenario starts on a dead character', async () => {
