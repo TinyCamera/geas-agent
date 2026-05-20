@@ -21,6 +21,14 @@ geas-agent  ──MCP/HTTP──▶  geas-server mcp-server (:8088)  ──HTTP�
 
 ## 2. Start the geas-server local stack
 
+> **Kill any pre-existing stack first.** If you already have a `npm run dev`
+> running, it likely does NOT have the dev auth bypass envs set, and the
+> scenario will hit 401. Tear it down before starting fresh:
+>
+> ```bash
+> lsof -ti:8088,:2567,:8085 | xargs kill
+> ```
+
 `npm run dev` in **geas-server** brings up everything (shared watcher, Firestore
 emulator, game server on `:2567`, MCP server on `:8088`) under one command. The
 scenario runner can't do an interactive OAuth consent, so start it with the
@@ -47,8 +55,25 @@ In a second terminal:
 
 ```bash
 cd ~/work/geas/geas-agent
-npm install
-GEAS_MCP_URL=http://localhost:8088/mcp GEAS_DEV_UID=agent-dev npm run scenario:goblin-hunt
+npm ci
+```
+
+> **Install deps first** — even if `node_modules` already exists, recent
+> dependency additions may not be in your local install. `npm ci` is stricter
+> than `npm install`: it fails loud if `package-lock.json` and `node_modules`
+> have drifted, so you can't silently run against stale deps. (Symptom of
+> skipping this step: `ERR_MODULE_NOT_FOUND` on `@modelcontextprotocol/sdk` or
+> another dep — see §4.)
+
+> **Both env vars must be set in the same shell.** Running just
+> `npm run scenario:goblin-hunt` without `GEAS_MCP_URL` exported will fail with
+> `GEAS_MCP_URL is required`. Use persistent `export`s in the same terminal as
+> the scenario command:
+
+```bash
+export GEAS_MCP_URL=http://localhost:8088/mcp
+export GEAS_DEV_UID=agent-dev
+npm run scenario:goblin-hunt
 ```
 
 Environment the scenario CLI reads (see `src/scenarios/cli.ts`):
@@ -79,6 +104,11 @@ Exit code **0** = scenario ran to completion. Other codes (from
 
 ## 4. Troubleshooting
 
+- **`ERR_MODULE_NOT_FOUND` (`@modelcontextprotocol/sdk` or similar)** —
+  `node_modules` is missing or stale. Run `npm ci` (or `npm install`) in
+  `geas-agent`. This is required even if `node_modules` already exists —
+  recent dep additions may not be in your local install, and the scenario
+  imports will fail before any of the runtime checks below can fire.
 - **Exit 2 / "couldn't reach server" / connection refused** — the geas-server
   stack isn't up, or `GEAS_MCP_URL` is wrong. Confirm `curl -s
   localhost:8088/health` responds and `:2567` is bound.
