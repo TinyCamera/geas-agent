@@ -12,7 +12,9 @@ export {
 } from './errors.js';
 export {
   GEAS_TOOL_NAMES,
+  GEAS_DEV_TOOL_NAMES,
   type GeasToolName,
+  type GeasDevToolName,
   type GeasToolResponse,
   type ActArgs,
   type AllocateStatsArgs,
@@ -24,6 +26,7 @@ export {
   type LookArgs,
   type NearestArgs,
   type SellItemArgs,
+  type SetPositionArgs,
   type StatusArgs,
   type SwitchCharacterArgs,
 } from './tools.js';

@@ -55,6 +55,7 @@ import {
   type EntitiesArgs,
   type NearestArgs,
   type SellItemArgs,
+  type SetPositionArgs,
   type SwitchCharacterArgs,
 } from './tools.js';
 
@@ -129,6 +130,15 @@ export class GeasMcpClient {
   private transport: Transport | null = null;
   private connecting: Promise<Result<void>> | null = null;
   private closed = false;
+  /**
+   * Set of tool names the server advertised at connect time. Populated by
+   * the connect-time drift check. Callers use `hasTool()` to probe optional
+   * dev-only tools (e.g. `set_position`, see #632) without paying the cost
+   * of a failed `callTool` round-trip when the tool isn't registered (the
+   * MCP SDK surfaces "unknown tool" as a generic JSON-RPC error which is
+   * harder to branch on cleanly).
+   */
+  private serverTools = new Set<string>();
 
   constructor(options: GeasMcpClientOptions) {
     if (!options.url && !options.transportFactory) {
@@ -169,6 +179,17 @@ export class GeasMcpClient {
   }
 
   /**
+   * True when the server advertised tool `name` at connect time. Use this
+   * to probe optional dev-only tools (e.g. `set_position`) before calling
+   * them — the tool is only registered when geas-server runs with
+   * `GEAS_DEV_UNAUTH=1`, so production connections will not have it. Returns
+   * `false` before the first successful `connect()`.
+   */
+  hasTool(name: string): boolean {
+    return this.serverTools.has(name);
+  }
+
+  /**
    * Connect to the MCP endpoint. Idempotent: concurrent callers share the
    * same in-flight promise. After resolve, `isConnected()` is true and the
    * tool surface has been validated.
@@ -191,6 +212,7 @@ export class GeasMcpClient {
         // Drift check — fail loudly on missing tools, warn on extras.
         const surface = await client.listTools();
         const present = new Set(surface.tools.map((t) => t.name));
+        this.serverTools = present;
         const missing = GEAS_TOOL_NAMES.filter((n) => !present.has(n));
         if (missing.length > 0) {
           await safeClose(client, transport);
@@ -380,6 +402,16 @@ export class GeasMcpClient {
   }
   switchCharacter(args: SwitchCharacterArgs, signal?: AbortSignal) {
     return this.callTool('switch_character', toRecord(args), { signal });
+  }
+  /**
+   * Dev-only teleport (#632). Probe with `hasTool('set_position')` first —
+   * the server only registers this tool when running with `GEAS_DEV_UNAUTH=1`
+   * (prod will not have it). Failure modes the server surfaces as typed
+   * `errorCode`: `out_of_bounds`, `tile_blocked`, `in_combat`, `invalid`,
+   * `not_available`, `player_not_found`.
+   */
+  setPosition(args: SetPositionArgs, signal?: AbortSignal) {
+    return this.callTool('set_position', toRecord(args), { signal });
   }
 
   // ---------------------------------------------------------------------------

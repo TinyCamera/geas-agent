@@ -97,10 +97,37 @@ Exit code **0** = scenario ran to completion. Other codes (from
 
 | Code | Meaning |
 |------|---------|
-| 0 | Completed (including benign early returns) — **green** |
+| 0 | Completed — **green** (combat engaged + resolved) |
 | 1 | Scenario threw, or unknown scenario name |
 | 2 | Environment / connection failure (couldn't reach server, auth) |
 | 3 | Bad invocation (missing scenario name argument) |
+
+**What "green" looks like (#632).** The scenario character spawns at
+Bramble Hollow village center (Heartlands — no hostile spawns). Fog of
+war (Chebyshev radius 6) hides the closest goblin band (Wilds, ~150
+tiles north), so the scenario's first `entities(ENEMY)` call returns
+empty. The scenario then teleports to (544, 460) via the dev-only
+`set_position` MCP tool (registered only when geas-server is running
+with `GEAS_DEV_UNAUTH=1`), waits ~600ms for chunk activation, re-asks,
+finds a goblin, and engages combat. A green run logs roughly:
+
+```
+[scenario:goblin-hunt] spawn snapshot: pos=(544,608) hp=200/200
+[scenario:goblin-hunt] no goblin in fog-of-war range from spawn — teleporting to (544,460) (Wilds) via set_position
+[scenario:goblin-hunt] target: Goblin (Lv 5) <id> at (...) dist=...
+[scenario:goblin-hunt] round 1: hp=200/200 (100%) inCombat=true
+[scenario:goblin-hunt] act result: status=ok outcome=hit
+[scenario:goblin-hunt] target <id> no longer in live-enemy list — kill assumed
+[scenario:goblin-hunt] returning to spawn from (...) -> (544,608)
+[scenario:goblin-hunt] completed in <N>ms
+```
+
+The pre-#632 behaviour ("no goblin in fog-of-war range; scenario ends
+idle (success)") is no longer green — that branch now throws so a
+hollow run surfaces as exit `1`, not exit `0`. If you see the scenario
+throw with "no goblin in fog-of-war range, and set_position is not
+available", the server isn't running with `GEAS_DEV_UNAUTH=1` — restart
+step 2 with both bypass vars set.
 
 ## 4. Troubleshooting
 
@@ -124,6 +151,15 @@ Exit code **0** = scenario ran to completion. Other codes (from
   per step 1. Emulator data persists in `geas-server/.firestore-data/`.
 - **MCP 401 in an unattended run** — do not try to re-auth in a loop; the
   bypass is the only non-interactive path locally. Verify both bypass vars.
+- **Scenario throws "no goblin in fog-of-war range, and set_position is not
+  available"** (#632) — `set_position` is dev-only and only registered when
+  geas-server runs with `GEAS_DEV_UNAUTH=1`. Restart step 2 with both bypass
+  vars; the scenario uses this tool to teleport from village-center spawn
+  (Heartlands, no goblins) into the Wilds.
+- **Scenario throws "no goblin in fog-of-war range after teleport"** (#632) —
+  the world layout has drifted from canonical, or the Wilds region is empty.
+  Check that `geas-server/packages/shared/src/chunks.ts` `REGION_SPAWN_CONFIGS.WILDS`
+  still includes `'goblin'` in `enemyTypes` and `enemiesPerChunk` is > 0.
 
 ## 5. Acceptance (geas-server#583)
 
