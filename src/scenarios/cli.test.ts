@@ -26,6 +26,46 @@ describe('parseCliOptions', () => {
     }
   });
 
+  // Regression: #631 — the GEAS_MCP_URL error message had a missing closing
+  // paren in an earlier draft. Asserting the exact format keeps it from
+  // drifting again, and the "balanced parens" check below catches the same
+  // class of typo in any other parser error string we add later.
+  it('GEAS_MCP_URL error message is well-formed (closing paren present)', () => {
+    const r = parseCliOptions(['goblin-hunt'], {});
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toBe(
+        'GEAS_MCP_URL is required (e.g. http://localhost:8088/mcp)',
+      );
+    }
+  });
+
+  it('all parser error messages have balanced parentheses', () => {
+    // Drive every error branch in parseCliOptions and assert each message has
+    // matching `(` / `)` counts. Cheap audit that catches the #631 typo class.
+    const cases: Array<{ argv: string[]; env: NodeJS.ProcessEnv }> = [
+      { argv: [], env: {} }, // missing scenario name
+      { argv: ['goblin-hunt'], env: {} }, // missing GEAS_MCP_URL
+      {
+        argv: ['goblin-hunt'],
+        env: { GEAS_MCP_URL: 'x', GEAS_SCENARIO_TIMEOUT: '0' },
+      }, // bad timeout
+      {
+        argv: ['goblin-hunt'],
+        env: { GEAS_MCP_URL: 'x', GEAS_SCENARIO_TIMEOUT: 'not-a-number' },
+      }, // non-numeric timeout
+    ];
+    for (const c of cases) {
+      const r = parseCliOptions(c.argv, c.env);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        const opens = (r.message.match(/\(/g) ?? []).length;
+        const closes = (r.message.match(/\)/g) ?? []).length;
+        expect(opens, `unbalanced parens in: ${r.message}`).toBe(closes);
+      }
+    }
+  });
+
   it('parses a happy path with defaults', () => {
     const r = parseCliOptions(['goblin-hunt'], {
       GEAS_MCP_URL: 'http://localhost:8088/mcp',
