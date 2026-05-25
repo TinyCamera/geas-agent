@@ -51,9 +51,11 @@ import {
   type LlmMessage,
   type LlmProvider,
   type LlmToolDef,
+  type LlmUsage,
   type StopReason,
   type ToolUseBlock,
 } from '../llm/provider.js';
+import { computeCostUsd } from '../llm/pricing.js';
 import type { Result } from '../mcp/errors.js';
 import type { GeasToolResponse } from '../mcp/tools.js';
 import {
@@ -72,6 +74,13 @@ import {
   type LoopState,
   type LlmStop,
 } from './state-machine.js';
+import type {
+  ConversationKey,
+  ConversationStore,
+  PersistedLlmTurn,
+  PersistedToolCall,
+  PersistedTurn,
+} from '../persistence/conversation-store.js';
 
 /**
  * Channel-A events emitted by the runner. Open-ended union so downstream
@@ -97,6 +106,32 @@ export type LoopEmitEvent =
 
 export type LoopEmitter = (event: LoopEmitEvent) => void;
 
+/**
+ * Optional persistence wiring (#732). When supplied the runner appends one
+ * `PersistedTurn` doc per `start()` call, capturing the user message, the
+ * sequence of LLM round-trips (intent + tool calls + narration), token usage,
+ * cost, and any terminal error. The caller is responsible for:
+ *
+ *   - Allocating monotonic `turnIndex` values via `nextTurnIndex()` — typically
+ *     a closure over a per-session counter primed from
+ *     `store.getSessionTurns(...).length`.
+ *   - Providing stable `sessionId` + `displayName` for the listing UI (#650).
+ *
+ * Persistence is fire-and-forget at turn completion: the runner awaits the
+ * `appendTurn` promise and surfaces write failures via `emit({type:'error'})`
+ * but does not roll back conversational state — the live in-memory buffer
+ * is unaffected. Cross-restart resume relies on the persisted history; a
+ * dropped append means that turn won't appear in `--list` / `--session`.
+ */
+export interface LoopPersistence {
+  readonly store: ConversationStore;
+  readonly key: ConversationKey;
+  readonly sessionId: string;
+  readonly displayName: string;
+  /** Mint the next monotonic turn index. May return a promise. */
+  nextTurnIndex(): number | Promise<number>;
+}
+
 /** What the runner needs to start. */
 export interface LoopRunnerOptions {
   readonly llm: LlmProvider;
@@ -109,6 +144,8 @@ export interface LoopRunnerOptions {
   readonly emit: LoopEmitter;
   /** Hard cap on LLM round-trips per user-turn (defaults to 8). */
   readonly maxTurns?: number;
+  /** Optional persistence (#732). Omitted ⇒ no writes — same shape as before. */
+  readonly persistence?: LoopPersistence;
 }
 
 const DEFAULT_MAX_TURNS = 8;
@@ -209,6 +246,18 @@ export class LoopRunner {
     const maxTurns = this.#opts.maxTurns ?? DEFAULT_MAX_TURNS;
     let turn = 0;
 
+    // Per-turn persistence accumulators (#732). Collected even when
+    // `persistence` is unset — keeps the per-iteration code branch-free.
+    const llmTurns: PersistedLlmTurn[] = [];
+    const usageTotal = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    };
+    let totalCostUsd = 0;
+    let terminalError: string | null = null;
+
     while (!isTerminal(this.#state) && turn < maxTurns) {
       turn += 1;
 
@@ -220,11 +269,13 @@ export class LoopRunner {
       };
       const llmRes = await this.#opts.llm.generate(req);
       if (!llmRes.ok) {
+        const msg = `llm: ${llmRes.error.message}`;
         this.#opts.emit({
           type: 'error',
-          message: `llm: ${llmRes.error.message}`,
+          message: msg,
           cause: llmRes.error,
         });
+        terminalError = msg;
         this.#advance({ kind: 'fatal-error' });
         break;
       }
@@ -232,11 +283,28 @@ export class LoopRunner {
       this.#appendAssistant(result);
       this.#emitTextDeltas(result.content);
 
+      // Aggregate per-call usage + cost.
+      usageTotal.inputTokens += result.usage.inputTokens;
+      usageTotal.outputTokens += result.usage.outputTokens;
+      usageTotal.cacheReadInputTokens += result.usage.cacheReadInputTokens;
+      usageTotal.cacheCreationInputTokens +=
+        result.usage.cacheCreationInputTokens;
+      totalCostUsd += computeCostUsd(result.model, result.usage).total;
+
+      const intent = extractIntent(result.content);
+      const roundTrip: { intent: string | null; toolCalls: PersistedToolCall[]; narration: string } = {
+        intent,
+        toolCalls: [],
+        narration: '',
+      };
+
       const stop = mapStop(result.stopReason);
       this.#advance({ kind: 'llm-response', stop });
 
       if ((this.#state as LoopState) === 'narrating') {
         const narration = collectText(result.content);
+        roundTrip.narration = narration;
+        llmTurns.push(roundTrip);
         this.#opts.emit({ type: 'narration', text: narration });
         this.#advance({ kind: 'narration-complete' });
         this.#opts.emit({ type: 'done', reason: 'end_turn' });
@@ -247,17 +315,19 @@ export class LoopRunner {
       const toolUse = result.content.find(isToolUseBlock);
       if (!toolUse) {
         // Model said `tool_use` but didn't emit one. Treat as fatal.
-        this.#opts.emit({
-          type: 'error',
-          message: 'llm reported tool_use stop but emitted no tool_use block',
-        });
+        const msg = 'llm reported tool_use stop but emitted no tool_use block';
+        this.#opts.emit({ type: 'error', message: msg });
+        terminalError = msg;
+        // Persist the text-only round-trip so the doc reflects what happened.
+        roundTrip.narration = collectText(result.content);
+        llmTurns.push(roundTrip);
         this.#advance({ kind: 'fatal-error' });
         break;
       }
       const plan: AttemptPlan = {
         tool: toolUse.name,
         args: toolUse.input,
-        intent: extractIntent(result.content),
+        intent,
       };
       this.#opts.emit({ type: 'tool-call', plan });
 
@@ -269,6 +339,18 @@ export class LoopRunner {
         stuckDetector: this.#opts.stuckDetector,
         retryBudget: this.#opts.retryBudget,
       });
+
+      roundTrip.toolCalls.push({
+        tool: plan.tool,
+        args: plan.args,
+        status: outcome.status,
+        attempts: outcome.attempts,
+      });
+      // Any text the model emitted alongside the tool_use becomes the
+      // round-trip's narration (typically an INTENT prefix; sometimes
+      // chit-chat). Stripped INTENT prefix is fine — recall doesn't need it.
+      roundTrip.narration = collectText(result.content);
+      llmTurns.push(roundTrip);
 
       this.#opts.emit({ type: 'tool-result', tool: plan.tool, outcome });
 
@@ -295,14 +377,57 @@ export class LoopRunner {
 
     if (!isTerminal(this.#state)) {
       // We blew the turn cap.
-      this.#opts.emit({
-        type: 'error',
-        message: `loop exceeded maxTurns=${maxTurns}`,
-      });
+      const msg = `loop exceeded maxTurns=${maxTurns}`;
+      this.#opts.emit({ type: 'error', message: msg });
+      terminalError = msg;
       this.#advance({ kind: 'fatal-error' });
     }
 
+    // === persistence (#732) ===
+    if (this.#opts.persistence) {
+      await this.#persistTurn({
+        userMessage,
+        llmTurns,
+        usageTotal,
+        totalCostUsd,
+        terminalError,
+      });
+    }
+
     return this.#state;
+  }
+
+  async #persistTurn(input: {
+    userMessage: string;
+    llmTurns: readonly PersistedLlmTurn[];
+    usageTotal: LlmUsage;
+    totalCostUsd: number;
+    terminalError: string | null;
+  }): Promise<void> {
+    const p = this.#opts.persistence!;
+    try {
+      const turnIndex = await p.nextTurnIndex();
+      const turn: PersistedTurn = {
+        turnIndex,
+        sessionId: p.sessionId,
+        characterId: p.key.characterId,
+        displayName: p.displayName,
+        timestamp: new Date().toISOString(),
+        userMessage: input.userMessage,
+        llmTurns: input.llmTurns,
+        tokenUsage: input.usageTotal,
+        totalCostUsd: input.totalCostUsd,
+        ...(input.terminalError ? { error: input.terminalError } : {}),
+      };
+      await p.store.appendTurn(p.key, turn);
+    } catch (e) {
+      // Conversation buffer is unaffected — surface but don't crash.
+      this.#opts.emit({
+        type: 'error',
+        message: `persistence: ${(e as Error).message}`,
+        cause: e,
+      });
+    }
   }
 
   // ----- internals -----

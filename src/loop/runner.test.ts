@@ -7,6 +7,7 @@ import { ok, err, makeError, type Result } from '../mcp/errors.js';
 import type { GeasToolResponse } from '../mcp/tools.js';
 import type { AttemptPlan, RecoveryDriver } from './run-with-retry.js';
 import type { LlmToolDef } from '../llm/provider.js';
+import { InMemoryConversationStore } from '../persistence/conversation-store.js';
 
 const TOOLS: readonly LlmToolDef[] = [
   {
@@ -194,6 +195,218 @@ describe('LoopRunner — end-to-end', () => {
     // While in flight, state is not idle, so a second start() throws.
     await expect(runner.start('hi again')).rejects.toThrow(/cannot start/);
     await p1;
+  });
+
+  describe('persistence (#732)', () => {
+    it('appends one PersistedTurn per start() with user message + llmTurns', async () => {
+      const llm = new NoopProvider({
+        script: [
+          {
+            stopReason: 'tool_use',
+            content: [
+              { type: 'text', text: 'INTENT: scout the surroundings' },
+              { type: 'tool_use', id: 't1', name: 'look', input: {} },
+            ],
+          },
+          {
+            stopReason: 'end_turn',
+            content: [{ type: 'text', text: 'You see a torchlit room.' }],
+          },
+        ],
+      });
+      const store = new InMemoryConversationStore();
+      const key = { uid: 'u-1', characterId: 'char-A' };
+      const { events, emit } = captureEmitter();
+      const runner = new LoopRunner({
+        llm,
+        dispatch: staticDispatcher([
+          ok({
+            content: [{ type: 'text', text: '{"room":"hall"}' }],
+            structuredContent: { room: 'hall' },
+          }),
+        ]),
+        stuckDetector: createStuckDetector(),
+        retryBudget: createRetryBudget(),
+        recover: neverRecover,
+        tools: TOOLS,
+        emit,
+        persistence: {
+          store,
+          key,
+          sessionId: 'sess-X',
+          displayName: 'Niall',
+          nextTurnIndex: () => 0,
+        },
+      });
+
+      const final = await runner.start('Where am I?');
+      expect(final).toBe('done');
+      // No error emit — clean persistence.
+      expect(events.some((e) => e.type === 'error')).toBe(false);
+
+      const turns = await store.getSessionTurns(key, 'sess-X');
+      expect(turns).toHaveLength(1);
+      const t = turns[0];
+      expect(t.turnIndex).toBe(0);
+      expect(t.sessionId).toBe('sess-X');
+      expect(t.characterId).toBe('char-A');
+      expect(t.displayName).toBe('Niall');
+      expect(t.userMessage).toBe('Where am I?');
+      expect(t.llmTurns).toHaveLength(2);
+      // First LLM round-trip: tool_use, intent extracted, one tool call.
+      expect(t.llmTurns[0].intent).toBe('scout the surroundings');
+      expect(t.llmTurns[0].toolCalls).toHaveLength(1);
+      expect(t.llmTurns[0].toolCalls[0].tool).toBe('look');
+      expect(t.llmTurns[0].toolCalls[0].status).toBe('ok');
+      // Second LLM round-trip: narration, no tool calls.
+      expect(t.llmTurns[1].toolCalls).toHaveLength(0);
+      expect(t.llmTurns[1].narration).toBe('You see a torchlit room.');
+      // timestamp parseable as ISO.
+      expect(() => new Date(t.timestamp).toISOString()).not.toThrow();
+      expect(t.error).toBeUndefined();
+    });
+
+    it('cross-restart resume: two messages persisted produce 4 messages on seed', async () => {
+      // Drive two user-turns end-to-end with persistence on, then verify the
+      // store contains the right shape for `--list` (turns=2) and that
+      // seeding a *new* runner from the same sessionId yields a 4-message
+      // (2 user + 2 assistant) buffer — the acceptance scenario.
+      const store = new InMemoryConversationStore();
+      const key = { uid: 'u-1', characterId: 'char-A' };
+      let nextIdx = 0;
+
+      const makeRunner = (
+        scriptedNarration: string,
+      ): LoopRunner => {
+        const llm = new NoopProvider({
+          script: [
+            {
+              stopReason: 'end_turn',
+              content: [{ type: 'text', text: scriptedNarration }],
+            },
+          ],
+        });
+        return new LoopRunner({
+          llm,
+          dispatch: staticDispatcher([]),
+          stuckDetector: createStuckDetector(),
+          retryBudget: createRetryBudget(),
+          recover: neverRecover,
+          tools: TOOLS,
+          emit: () => undefined,
+          persistence: {
+            store,
+            key,
+            sessionId: 'sess-resume',
+            displayName: 'Niall',
+            nextTurnIndex: () => nextIdx++,
+          },
+        });
+      };
+
+      await makeRunner('Hello, traveller.').start('Hi there.');
+      await makeRunner('Indeed it was.').start('Was that fun?');
+
+      const sessions = await store.listSessions('u-1');
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe('sess-resume');
+      expect(sessions[0].turns).toBe(2);
+
+      // Now simulate a fresh process: import the seed helper and load
+      // history into a brand-new runner.
+      const { seedRunnerFromSession } = await import('./resume.js');
+      const fresh = new LoopRunner({
+        llm: new NoopProvider(),
+        dispatch: staticDispatcher([]),
+        stuckDetector: createStuckDetector(),
+        retryBudget: createRetryBudget(),
+        recover: neverRecover,
+        tools: TOOLS,
+        emit: () => undefined,
+      });
+      const seeded = await seedRunnerFromSession({
+        runner: fresh,
+        store,
+        key,
+        sessionId: 'sess-resume',
+      });
+      // 2 user + 2 assistant = 4 (acceptance criterion).
+      expect(seeded).toBe(4);
+      expect(fresh.messages).toHaveLength(4);
+    });
+
+    it('surfaces a persistence failure via emit({error}) without affecting state', async () => {
+      const failingStore = {
+        appendTurn: async () => {
+          throw new Error('boom');
+        },
+        getRecentTurns: async () => [],
+        getAllTurns: async () => [],
+        getSessionTurns: async () => [],
+        listSessions: async () => [],
+      };
+      const llm = new NoopProvider({
+        script: [
+          {
+            stopReason: 'end_turn',
+            content: [{ type: 'text', text: 'hi.' }],
+          },
+        ],
+      });
+      const { events, emit } = captureEmitter();
+      const runner = new LoopRunner({
+        llm,
+        dispatch: staticDispatcher([]),
+        stuckDetector: createStuckDetector(),
+        retryBudget: createRetryBudget(),
+        recover: neverRecover,
+        tools: TOOLS,
+        emit,
+        persistence: {
+          store: failingStore,
+          key: { uid: 'u', characterId: 'c' },
+          sessionId: 's',
+          displayName: 'N',
+          nextTurnIndex: () => 0,
+        },
+      });
+      const final = await runner.start('hi');
+      // Turn itself succeeded; persistence error surfaces afterward.
+      expect(final).toBe('done');
+      const errs = events.filter((e) => e.type === 'error');
+      expect(errs).toHaveLength(1);
+      expect(errs[0].type === 'error' && errs[0].message).toMatch(
+        /persistence: boom/,
+      );
+    });
+
+    it('records terminal error on the persisted turn when llm fails', async () => {
+      const llm = new NoopProvider({
+        script: [{ error: { kind: 'transport', message: 'dropped' } }],
+      });
+      const store = new InMemoryConversationStore();
+      const key = { uid: 'u', characterId: 'c' };
+      const runner = new LoopRunner({
+        llm,
+        dispatch: staticDispatcher([]),
+        stuckDetector: createStuckDetector(),
+        retryBudget: createRetryBudget(),
+        recover: neverRecover,
+        tools: TOOLS,
+        emit: () => undefined,
+        persistence: {
+          store,
+          key,
+          sessionId: 's-err',
+          displayName: 'N',
+          nextTurnIndex: () => 0,
+        },
+      });
+      await runner.start('hi');
+      const turns = await store.getSessionTurns(key, 's-err');
+      expect(turns).toHaveLength(1);
+      expect(turns[0].error).toMatch(/dropped/);
+    });
   });
 
   it('caps runaway loops via maxTurns', async () => {

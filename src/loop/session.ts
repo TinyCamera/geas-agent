@@ -74,14 +74,30 @@ export type WakeCause =
       readonly payload: unknown;
     };
 
+/**
+ * Per-turn context handed to `runnerFactory`. Optional fields the entrypoint
+ * uses to scope persistence (#732) — `sessionId` for the cross-restart resume
+ * key, `displayName` for the `--list` row. The factory is free to ignore any
+ * of it; tests typically do.
+ */
+export interface RunnerTurnContext {
+  readonly sessionId?: string;
+  readonly displayName?: string;
+}
+
 export interface SessionOptions {
   /**
    * Mints a fresh runner per user-turn. The session needs a *new* runner
    * each turn because `LoopRunner` ends in a terminal state — it can't
    * be reused. Wiring per-turn (system prompt, tools, hooks, emitter)
    * lives in this factory at the caller's discretion.
+   *
+   * The optional {@link RunnerTurnContext} threads per-turn metadata
+   * (sessionId, displayName) from the transport layer down to the
+   * factory — used by the production entrypoint to wire conversation
+   * persistence (#732).
    */
-  readonly runnerFactory: () => LoopRunner;
+  readonly runnerFactory: (ctx?: RunnerTurnContext) => LoopRunner;
   /**
    * Channel-A events from the active runner pass through this emitter so
    * the outer transport gets one stable subscription per session, not one
@@ -160,7 +176,10 @@ export class IdleSession {
    * to finish, then runs. (A correct transport shouldn't issue concurrent
    * user messages for one character anyway, but we serialise defensively.)
    */
-  async deliverUserMessage(text: string): Promise<void> {
+  async deliverUserMessage(
+    text: string,
+    ctx?: RunnerTurnContext,
+  ): Promise<void> {
     if (this.#closed) throw new Error('IdleSession: closed');
 
     // Serialise — wait for any in-flight turn.
@@ -172,7 +191,7 @@ export class IdleSession {
     this.#wakes += 1;
     await this.#opts.hooks?.onWake?.({ kind: 'user-message', text });
 
-    const runner = this.#opts.runnerFactory();
+    const runner = this.#opts.runnerFactory(ctx);
     this.#activeRunner = runner;
     this.#inFlightToolCalls = 0; // fresh per turn
 
