@@ -176,6 +176,41 @@ export class Transport {
     return parsed as ChatAccepted;
   }
 
+  /** Post the user's choice for a server-pushed decision. Throws on non-2xx.
+   *  The `text` field is whatever `decisions.serializeChoice` produces —
+   *  optionId for simple decisions, a JSON envelope for character creation. */
+  async resolveDecision(decisionId: string, text: string): Promise<ChatAccepted> {
+    if (this.#closed) throw new Error('transport closed');
+    const url = `${this.#opts.baseUrl}/resolve-decision`;
+    const res = await this.#opts.fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.#opts.token}`,
+      },
+      body: JSON.stringify({
+        sessionId: this.#opts.sessionId,
+        characterId: this.#opts.characterId,
+        decisionId,
+        text,
+      }),
+    });
+    const raw = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`POST /resolve-decision: ${res.status} ${raw.slice(0, 200)}`);
+    }
+    if (!res.ok) {
+      const err = parsed as ApiError;
+      throw new Error(
+        `POST /resolve-decision: ${res.status} ${err.error}: ${err.message}`,
+      );
+    }
+    return parsed as ChatAccepted;
+  }
+
   /** Shutdown — closes the WS cleanly, no further events. Idempotent. */
   close(): void {
     if (this.#closed) return;

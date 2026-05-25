@@ -90,7 +90,7 @@ describe('renderEvent', () => {
     expect(t).toBe('Hi.\nThe crowd hushes.\n');
   });
 
-  it('decision prints verbatim JSON until #649 lands', () => {
+  it('decision with unknown shape renders generic prompt (no crash)', () => {
     const t = transcript([
       {
         ...envelope(1),
@@ -99,7 +99,30 @@ describe('renderEvent', () => {
         payload: { picks: ['fire', 'ice'] },
       },
     ]);
-    expect(t).toBe('[decision d-7] {"picks":["fire","ice"]}\n');
+    // Unknown kind, no options array — falls back to header + no-options hint.
+    expect(t).toContain('Decision');
+    expect(t).toContain('(no options');
+  });
+
+  it('decision level_up renders a numbered list', () => {
+    const t = transcript([
+      {
+        ...envelope(1),
+        type: 'decision',
+        decisionId: 'd-9',
+        payload: {
+          kind: 'level_up',
+          options: [
+            { id: 'power-strike', label: 'Power Strike', description: 'STR +2' },
+            { id: 'block', label: 'Block', description: '+10% dmg reduction' },
+          ],
+        },
+      },
+    ]);
+    expect(t).toContain('Level up — pick one:');
+    expect(t).toContain('[1] Power Strike — STR +2');
+    expect(t).toContain('[2] Block — +10% dmg reduction');
+    expect(t).toContain('Pick 1-2 (q to cancel):');
   });
 
   it('error event renders with an error: prefix', () => {
