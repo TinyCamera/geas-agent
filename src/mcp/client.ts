@@ -392,12 +392,32 @@ export class GeasMcpClient {
    * that want to assert against the canonical server-side schema rather than
    * the wrapper's hand-written list.
    */
-  async listTools(): Promise<Result<{ name: string; description?: string }[]>> {
+  async listTools(): Promise<
+    Result<
+      {
+        name: string;
+        description?: string;
+        inputSchema?: Record<string, unknown>;
+      }[]
+    >
+  > {
     const c = await this.ensureConnected();
     if (!c.ok) return err(c.error);
     try {
       const r = await this.client!.listTools();
-      return ok(r.tools.map((t) => ({ name: t.name, description: t.description })));
+      return ok(
+        r.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          // The SDK types `inputSchema` as `unknown`; the server side always
+          // serialises a JSON-schema object. Pass through as `Record` so
+          // callers can shovel it straight into `LlmToolDef.inputSchema`.
+          inputSchema:
+            t.inputSchema && typeof t.inputSchema === 'object'
+              ? (t.inputSchema as Record<string, unknown>)
+              : undefined,
+        })),
+      );
     } catch (e) {
       return err(classifyError(e));
     }
