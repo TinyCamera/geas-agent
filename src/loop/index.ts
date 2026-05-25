@@ -30,3 +30,20 @@ export {
   type LoopEmitEvent,
   type LoopEmitter,
 } from './runner.js';
+
+export {
+  isIdle,
+  DEFAULT_IDLE_THRESHOLD_MS,
+  type IdleInputs,
+  type IdleVerdict,
+} from './idle-detector.js';
+
+export {
+  IdleSession,
+  SYSTEM_CLOCK,
+  type SessionClock,
+  type SessionHooks,
+  type SessionOptions,
+  type SessionTelemetry,
+  type WakeCause,
+} from './session.js';
