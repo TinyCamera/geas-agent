@@ -63,6 +63,17 @@ export {
   type NoopProviderOptions,
   type ScriptedTurn,
 } from "./llm/index.js";
+export {
+  PLAN_THEN_ACT_INSTRUCTIONS,
+  composeSystemPrompt,
+  parseTurnIntents,
+  intentForToolUse,
+  type ParsedToolIntent,
+  type ParsedTurnIntents,
+  buildRecoveryPrompt,
+  type ToolCallFailure,
+  type BuildRecoveryPromptInput,
+} from "./prompts/index.js";
 
 const banner = "geas-agent online — MCP client ready";
 
