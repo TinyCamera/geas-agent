@@ -10,3 +10,23 @@ export {
   type RunWithRetryExhausted,
   type RunWithRetryGaveUp,
 } from './run-with-retry.js';
+
+export {
+  INITIAL_STATE,
+  isTerminal,
+  reduce,
+  tryReduce,
+  type LoopState,
+  type LoopEvent,
+  type LlmStop,
+  type Transition,
+  type TransitionOk,
+  type TransitionErr,
+} from './state-machine.js';
+
+export {
+  LoopRunner,
+  type LoopRunnerOptions,
+  type LoopEmitEvent,
+  type LoopEmitter,
+} from './runner.js';
