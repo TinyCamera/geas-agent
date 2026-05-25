@@ -23,11 +23,15 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.2.1",
     "firebase-admin": "^13.10.0",
+    "ws": "^8.21.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.0.0"

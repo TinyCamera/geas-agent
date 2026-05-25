@@ -105,6 +105,37 @@ export {
   type RunWithRetryExhausted,
   type RunWithRetryGaveUp,
 } from "./loop/index.js";
+export {
+  PROTOCOL_VERSION,
+  type ChannelAEvent,
+  type EventEnvelope,
+  type TextEvent,
+  type ToolCallEvent,
+  type ToolResultEvent,
+  type NarrationEvent,
+  type DecisionEvent,
+  type ErrorEvent,
+  type DoneEvent,
+  type HelloEvent,
+  type PingEvent,
+  type ChatRequest,
+  type ChatAccepted,
+  type ApiError,
+  type ResolveDecisionRequest,
+  type TokenVerifier,
+  REJECT_ALL_VERIFIER,
+  StaticDevVerifier,
+  FirebaseTokenVerifier,
+  EventBuffer,
+  EventHub,
+  type HubOptions,
+  type Subscriber,
+  SessionRegistry,
+  type SessionFactory,
+  createServer,
+  type ServerOptions,
+  type RunningServer,
+} from "./server/index.js";
 
 const banner = "geas-agent online — MCP client ready";
 
