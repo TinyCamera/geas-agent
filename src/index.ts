@@ -75,6 +75,25 @@ export {
   type BuildRecoveryPromptInput,
 } from "./prompts/index.js";
 export {
+  DEFAULT_KEEP_RECENT_TURNS,
+  DEFAULT_THRESHOLD_TOKENS,
+  LlmConversationSummarizer,
+  buildSummaryMessage,
+  decideSummarisation,
+  estimateBufferTokens,
+  estimateTurnTokens,
+  renderTurnsForSummary,
+  summariseIfNeeded,
+  type ConversationSummarizer,
+  type LlmConversationSummarizerOptions,
+  type StructuredSummary,
+  type SummarisationDecision,
+  type SummarisationOutcome,
+  type SummariseIfNeededInput,
+  type SummariseThresholdInput,
+  type SummarizeResult,
+} from "./memory/index.js";
+export {
   runWithRetry,
   type AttemptPlan,
   type RecoveryContext,
