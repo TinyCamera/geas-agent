@@ -15,6 +15,7 @@ export {
   type DoneEvent,
   type HelloEvent,
   type PingEvent,
+  type TelemetryEvent,
   type ChatRequest,
   type ChatAccepted,
   type ApiError,

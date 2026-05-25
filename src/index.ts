@@ -118,6 +118,7 @@ export {
   type DoneEvent,
   type HelloEvent,
   type PingEvent,
+  type TelemetryEvent,
   type ChatRequest,
   type ChatAccepted,
   type ApiError,
@@ -136,6 +137,22 @@ export {
   type ServerOptions,
   type RunningServer,
 } from "./server/index.js";
+export {
+  Transport,
+  parseEventFrame,
+  type TransportOptions,
+  type TransportEvent,
+  type TransportListener,
+  renderEvent,
+  renderTelemetryLine,
+  type RenderOptions,
+  type RenderPiece,
+  runRepl,
+  readConfigFromEnv,
+  type CliConfig,
+  type CliIo,
+  type CliHandles,
+} from "./repl/index.js";
 
 const banner = "geas-agent online — MCP client ready";
 

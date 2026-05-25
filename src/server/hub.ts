@@ -127,6 +127,53 @@ export class EventHub {
     return this.#streams.get(streamKey(uid, characterId))?.buffer.lastEventId ?? 0;
   }
 
+  /**
+   * Push a telemetry record onto a stream (buffered + fanned out like any
+   * other event). Producer wiring (a `TelemetryProvider` decorator that
+   * pumps records here) is filed as follow-up of #647; for #648 this
+   * exists so the REPL has a renderable wire surface and tests can drive
+   * the path end-to-end.
+   */
+  emitTelemetry(
+    uid: string,
+    characterId: string,
+    record: {
+      provider: string;
+      model: string;
+      costUsd: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      latencyMs: number;
+    },
+  ): void {
+    const stream = this.#streamOrCreate(uid, characterId);
+    const built = stream.buffer.append((eventId) => ({
+      protocolVersion: PROTOCOL_VERSION,
+      eventId,
+      ts: this.#now(),
+      uid,
+      characterId,
+      type: 'telemetry',
+      provider: record.provider,
+      model: record.model,
+      costUsd: record.costUsd,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      cacheReadInputTokens: record.cacheReadInputTokens,
+      cacheCreationInputTokens: record.cacheCreationInputTokens,
+      latencyMs: record.latencyMs,
+    }));
+    for (const sub of stream.subscribers.values()) {
+      try {
+        sub.send(built.event);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   #streamOrCreate(uid: string, characterId: string): Stream {
     const key = streamKey(uid, characterId);
     let s = this.#streams.get(key);
