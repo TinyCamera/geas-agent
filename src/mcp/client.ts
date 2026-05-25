@@ -43,6 +43,11 @@ import {
 } from './errors.js';
 import type { AgentBinding } from '../binding/index.js';
 import {
+  validateToolCall,
+  buildSchemaCache,
+  type ToolInputSchema,
+} from './validator.js';
+import {
   GEAS_TOOL_NAMES,
   type GeasToolName,
   type GeasToolResponse,
@@ -139,6 +144,15 @@ export class GeasMcpClient {
    * harder to branch on cleanly).
    */
   private serverTools = new Set<string>();
+  /**
+   * Per-tool input schema cache, populated by the connect-time
+   * `listTools()` sweep. Consumed by the pre-dispatch validator (#658) so
+   * `callTool` rejects typos / missing required args / wrong-type args
+   * before the network round-trip. Cleared on disconnect; refreshed every
+   * connect (which fires on transport-drop reconnects too, so server-side
+   * schema bumps are picked up automatically).
+   */
+  private schemaCache: Map<string, ToolInputSchema> = new Map();
 
   constructor(options: GeasMcpClientOptions) {
     if (!options.url && !options.transportFactory) {
@@ -213,6 +227,13 @@ export class GeasMcpClient {
         const surface = await client.listTools();
         const present = new Set(surface.tools.map((t) => t.name));
         this.serverTools = present;
+        // Cache per-tool input schemas for the local pre-dispatch validator.
+        // `inputSchema` is `{type:'object', properties?, required?}` plus a
+        // catchall — see MCP SDK ToolSchema. Cast via unknown rather than
+        // depend on the SDK's internal Zod types.
+        this.schemaCache = buildSchemaCache(
+          surface.tools as ReadonlyArray<{ name: string; inputSchema?: unknown }>,
+        );
         const missing = GEAS_TOOL_NAMES.filter((n) => !present.has(n));
         if (missing.length > 0) {
           await safeClose(client, transport);
@@ -251,6 +272,8 @@ export class GeasMcpClient {
     const t = this.transport;
     this.client = null;
     this.transport = null;
+    this.schemaCache = new Map();
+    this.serverTools = new Set();
     if (c || t) await safeClose(c, t);
   }
 
@@ -283,6 +306,32 @@ export class GeasMcpClient {
       return err(
         makeError('not_connected', 'client has been disconnected', { tool: name }),
       );
+    }
+
+    // ---- Pre-dispatch validation (#658) -------------------------------------
+    // Only runs when we have schemas cached (i.e. after a successful
+    // connect). On a fresh client / pre-connect call this short-circuits to
+    // ok, and the existing ensureConnected path handles the connect itself
+    // (which populates the cache, so the *next* call validates).
+    if (this.schemaCache.size > 0) {
+      const verdict = validateToolCall(
+        name,
+        args,
+        this.schemaCache,
+      );
+      if (!verdict.ok) {
+        return err(
+          makeError(verdict.kind, verdict.message, {
+            tool: name,
+            args: verdict.args,
+          }),
+        );
+      }
+      if (verdict.extras.length > 0) {
+        this.opts.onWarning(
+          `tool '${name}' received args not in schema (drift / extras): ${verdict.extras.join(', ')}`,
+        );
+      }
     }
 
     let lastErr: GeasMcpError | null = null;

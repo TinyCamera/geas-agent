@@ -243,6 +243,122 @@ describe('GeasMcpClient', () => {
     });
   });
 
+  describe('pre-dispatch validation (#658)', () => {
+    // For these tests we need the fake server to advertise real `inputSchema`
+    // entries so the wrapper's cache is populated with shapes worth checking.
+    // Build a custom server with explicit Zod schemas for `act` (requires
+    // intent: string) and `nearest` (optional maxDist: number).
+    async function buildSchemaServer(): Promise<McpServer> {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const zmod: any = await import('zod');
+      const z = zmod.z ?? zmod;
+      const srv = new McpServer({ name: 'fake-schema', version: '0.0.1' });
+      for (const name of GEAS_TOOL_NAMES) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (srv as any).registerTool(
+          name,
+          {
+            title: name,
+            description: name,
+            inputSchema:
+              name === 'act'
+                ? { intent: z.string(), dx: z.number().optional(), dy: z.number().optional() }
+                : name === 'nearest'
+                  ? { type: z.string().optional(), maxDist: z.number().optional(), aliveOnly: z.boolean().optional() }
+                  : name === 'create_character'
+                    ? { name: z.string() }
+                    : {},
+          },
+          async (args: Record<string, unknown>) => ({
+            content: [{ type: 'text', text: `ok:${name}` }],
+            structuredContent: { name, args },
+          }),
+        );
+      }
+      return srv;
+    }
+
+    it('rejects unknown tool names locally without a server round-trip', async () => {
+      server = await buildSchemaServer();
+      client = makeClient();
+      await linkClientToServer(client, server);
+      const c = await client.connect();
+      expect(c.ok).toBe(true);
+      const res = await client.callTool('not_a_real_tool', {});
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error.kind).toBe('unknown_tool');
+      expect(res.error.tool).toBe('not_a_real_tool');
+    });
+
+    it('rejects missing required args', async () => {
+      server = await buildSchemaServer();
+      client = makeClient();
+      await linkClientToServer(client, server);
+      await client.connect();
+      const res = await client.callTool('act', { dx: 1 }); // missing intent
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error.kind).toBe('missing_required');
+      expect(res.error.args).toContain('intent');
+    });
+
+    it('rejects wrong arg types', async () => {
+      server = await buildSchemaServer();
+      client = makeClient();
+      await linkClientToServer(client, server);
+      await client.connect();
+      // intent must be string; passing a number should fail locally.
+      const res = await client.callTool('act', { intent: 42 });
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error.kind).toBe('wrong_type');
+      expect(res.error.args).toEqual(['intent']);
+    });
+
+    it('warns (but does not fail) on extra args', async () => {
+      const warnings: string[] = [];
+      server = await buildSchemaServer();
+      client = makeClient({ onWarning: (m) => warnings.push(m) });
+      await linkClientToServer(client, server);
+      await client.connect();
+      const res = await client.callTool('act', { intent: 'move', surprise: 'x' });
+      expect(res.ok).toBe(true);
+      const validationWarn = warnings.find((w) => w.includes('surprise'));
+      expect(validationWarn).toBeDefined();
+    });
+
+    it('valid calls dispatch through to the server', async () => {
+      server = await buildSchemaServer();
+      client = makeClient();
+      await linkClientToServer(client, server);
+      await client.connect();
+      const res = await client.callTool('act', { intent: 'move', dx: 1, dy: 0 });
+      expect(res.ok).toBe(true);
+    });
+
+    it('does not flag the binding envelope (_agentBinding) as an extra', async () => {
+      const warnings: string[] = [];
+      server = await buildSchemaServer();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { createBinding } = await import('../binding/index.js');
+      client = makeClient({
+        onWarning: (m) => warnings.push(m),
+        binding: createBinding({
+          entityId: 'e1',
+          ownerUid: 'u1',
+          bindingMode: 'agent-only',
+        }),
+      });
+      await linkClientToServer(client, server);
+      await client.connect();
+      const res = await client.callTool('act', { intent: 'move' });
+      expect(res.ok).toBe(true);
+      const bindingWarn = warnings.find((w) => w.includes('_agentBinding'));
+      expect(bindingWarn).toBeUndefined();
+    });
+  });
+
   describe('reconnect-on-drop', () => {
     it('transparently reconnects when the transport is dropped between calls', async () => {
       // We need a transport factory that can be re-invoked to give a *fresh*
