@@ -26,7 +26,15 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { Transport, type TransportEvent } from './transport.js';
-import { renderEvent, type RenderPiece } from './render.js';
+import { renderEvent, renderLines, type RenderPiece } from './render.js';
+import {
+  applyDecisionInput,
+  parsePayload,
+  renderInitialPrompt,
+  serializeChoice,
+  serializeTimeout,
+  type DecisionState,
+} from './decisions.js';
 
 export interface CliConfig {
   readonly baseUrl: string;
@@ -93,6 +101,23 @@ export function runRepl(
   let inFlight = false;
   let midText = false;
   let exitCode = 0;
+  let pendingDecision: DecisionState | null = null;
+  let decisionTimer: NodeJS.Timeout | null = null;
+
+  function clearDecisionTimer(): void {
+    if (decisionTimer) {
+      clearTimeout(decisionTimer);
+      decisionTimer = null;
+    }
+  }
+
+  function resolveDecision(decisionId: string, text: string): void {
+    clearDecisionTimer();
+    pendingDecision = null;
+    transport.resolveDecision(decisionId, text).catch((err) => {
+      writeErr(`[resolve-decision failed: ${(err as Error).message}]\n`);
+    });
+  }
   let resolveDone!: (code: number) => void;
   const done = new Promise<number>((r) => {
     resolveDone = r;
@@ -153,6 +178,29 @@ export function runRepl(
         cleanup();
         return;
       case 'event': {
+        if (ev.event.type === 'decision') {
+          // Render the prompt + start tracking the active decision so the
+          // next stdin line is routed into `applyDecisionInput` instead of
+          // `transport.send`.
+          const decisionEv = ev.event;
+          const { lines, state } = renderInitialPrompt(
+            decisionEv.decisionId,
+            decisionEv.payload,
+          );
+          flushPieces(renderLines(lines, { color: config.color }));
+          pendingDecision = state;
+          const parsed = parsePayload(decisionEv.payload);
+          clearDecisionTimer();
+          if (parsed.deadlineMs && parsed.deadlineMs > 0) {
+            decisionTimer = setTimeout(() => {
+              if (pendingDecision && pendingDecision.decisionId === decisionEv.decisionId) {
+                writeErr(`[decision ${decisionEv.decisionId} timed out]\n`);
+                resolveDecision(decisionEv.decisionId, serializeTimeout());
+              }
+            }, parsed.deadlineMs);
+          }
+          return;
+        }
         const pieces = renderEvent(ev.event, { color: config.color });
         flushPieces(pieces);
         if (ev.event.type === 'done') {
@@ -166,12 +214,43 @@ export function runRepl(
 
   rl.on('line', (raw) => {
     const line = raw.trim();
-    if (!line) {
-      prompt();
-      return;
-    }
     if (line === ':quit' || line === ':q') {
       cleanup();
+      return;
+    }
+    if (pendingDecision) {
+      const result = applyDecisionInput(pendingDecision, raw);
+      switch (result.kind) {
+        case 'select': {
+          const id = pendingDecision.decisionId;
+          resolveDecision(id, serializeChoice({ optionId: result.optionId }));
+          return;
+        }
+        case 'stat-progress': {
+          pendingDecision = result.nextState;
+          flushPieces(renderLines(result.lines, { color: config.color }));
+          return;
+        }
+        case 'cancel': {
+          const id = pendingDecision.decisionId;
+          clearDecisionTimer();
+          pendingDecision = null;
+          transport
+            .resolveDecision(id, JSON.stringify({ cancelled: true }))
+            .catch((err) => {
+              writeErr(`[resolve-decision failed: ${(err as Error).message}]\n`);
+            });
+          return;
+        }
+        case 'invalid': {
+          flushPieces(renderLines(result.lines, { color: config.color }));
+          return;
+        }
+      }
+      return;
+    }
+    if (!line) {
+      prompt();
       return;
     }
     if (inFlight) {
@@ -194,6 +273,7 @@ export function runRepl(
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
+    clearDecisionTimer();
     try {
       rl.close();
     } catch {

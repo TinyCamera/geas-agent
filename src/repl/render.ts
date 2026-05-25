@@ -17,9 +17,17 @@
  */
 
 import type { ChannelAEvent, TelemetryEvent } from '../server/wire.js';
+import { renderInitialPrompt, type DecisionState } from './decisions.js';
 
 export interface RenderOptions {
   readonly color: boolean;
+}
+
+/** Side-channel result for `decision` events: the lines printed (`pieces`)
+ *  + the active DecisionState the CLI must route stdin into. */
+export interface DecisionRender {
+  readonly pieces: readonly RenderPiece[];
+  readonly state: DecisionState;
 }
 
 const ANSI = {
@@ -76,18 +84,16 @@ export function renderEvent(
       ];
     }
     case 'decision': {
-      // #649 replaces this with an interactive prompt. For now, verbatim JSON.
-      return [
-        { kind: 'turn-end' },
-        {
-          kind: 'line',
-          text: wrap(
-            opts,
-            ANSI.yellow,
-            `[decision ${event.decisionId}] ${JSON.stringify(event.payload)}`,
-          ),
-        },
-      ];
+      // #649: interactive prompt. The CLI handles input routing via
+      // `renderDecision` (which carries the active DecisionState). The
+      // base `renderEvent` returns the prompt lines so non-interactive
+      // callers (tests, transcript snapshots) still see them.
+      const { lines } = renderInitialPrompt(event.decisionId, event.payload);
+      const pieces: RenderPiece[] = [{ kind: 'turn-end' }];
+      for (const line of lines) {
+        pieces.push({ kind: 'line', text: wrap(opts, ANSI.yellow, line) });
+      }
+      return pieces;
     }
     case 'error':
       return [
@@ -103,6 +109,18 @@ export function renderEvent(
     case 'ping':
       return [];
   }
+}
+
+/** Render a free-floating set of lines (used by the CLI for decision re-prompts). */
+export function renderLines(
+  lines: readonly string[],
+  opts: RenderOptions = { color: true },
+): readonly RenderPiece[] {
+  const pieces: RenderPiece[] = [{ kind: 'turn-end' }];
+  for (const line of lines) {
+    pieces.push({ kind: 'line', text: wrap(opts, ANSI.yellow, line) });
+  }
+  return pieces;
 }
 
 /** The "$0.0023  (172 in / 38 cached / 24 out)" line. Exported for tests. */
