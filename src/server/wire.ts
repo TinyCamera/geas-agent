@@ -96,9 +96,10 @@ export interface PingEvent extends EventEnvelope {
  * the fields a client needs (no per-bucket cost split — clients render
  * a single dollar figure plus the in/out/cache breakdown).
  *
- * Producer wiring (TelemetryProvider → hub) is filed as a follow-up
- * sub-issue of #647 — #648 ships only the wire surface + client
- * renderer so the REPL can be unblocked.
+ * Producer wiring (TelemetryProvider → hub) shipped in #725 — see
+ * `src/server/telemetry-sink.ts` (`createTelemetrySink`,
+ * `wrapLlmWithTelemetry`). #648 shipped only the wire surface + client
+ * renderer so the REPL could be unblocked.
  */
 export interface TelemetryEvent extends EventEnvelope {
   readonly type: 'telemetry';
