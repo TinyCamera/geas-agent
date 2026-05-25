@@ -74,6 +74,18 @@ export {
   type ToolCallFailure,
   type BuildRecoveryPromptInput,
 } from "./prompts/index.js";
+export {
+  runWithRetry,
+  type AttemptPlan,
+  type RecoveryContext,
+  type RecoveryDriver,
+  type RunWithRetryInput,
+  type RunWithRetryOutcome,
+  type RunWithRetryOk,
+  type RunWithRetryStuck,
+  type RunWithRetryExhausted,
+  type RunWithRetryGaveUp,
+} from "./loop/index.js";
 
 const banner = "geas-agent online — MCP client ready";
 
