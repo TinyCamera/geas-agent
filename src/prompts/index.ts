@@ -23,3 +23,14 @@ export {
   type StuckSignal,
   type ToolCallRecord,
 } from './stuck.js';
+
+export {
+  createRetryBudget,
+  readRetryBudgetFromEnv,
+  DEFAULT_RETRY_BUDGET,
+  RETRY_BUDGET_ENV_VAR,
+  type RetryBudget,
+  type RetryBudgetExhaustedEvent,
+  type RetryBudgetTelemetry,
+  type RetryFailureDetail,
+} from './budget.js';
