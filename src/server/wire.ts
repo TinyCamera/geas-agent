@@ -88,6 +88,30 @@ export interface PingEvent extends EventEnvelope {
   readonly type: 'ping';
 }
 
+/**
+ * Per-turn cost / token telemetry. Additive in protocol v1 — clients
+ * that don't recognise the type can ignore it. The REPL (#648) prints
+ * one dim cost line per record; the web client (#592) will render the
+ * same fields. Mirrors `TelemetryRecord` (`src/llm/telemetry.ts`) on
+ * the fields a client needs (no per-bucket cost split — clients render
+ * a single dollar figure plus the in/out/cache breakdown).
+ *
+ * Producer wiring (TelemetryProvider → hub) is filed as a follow-up
+ * sub-issue of #647 — #648 ships only the wire surface + client
+ * renderer so the REPL can be unblocked.
+ */
+export interface TelemetryEvent extends EventEnvelope {
+  readonly type: 'telemetry';
+  readonly provider: string;
+  readonly model: string;
+  readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadInputTokens: number;
+  readonly cacheCreationInputTokens: number;
+  readonly latencyMs: number;
+}
+
 export type ChannelAEvent =
   | TextEvent
   | ToolCallEvent
@@ -97,7 +121,8 @@ export type ChannelAEvent =
   | ErrorEvent
   | DoneEvent
   | HelloEvent
-  | PingEvent;
+  | PingEvent
+  | TelemetryEvent;
 
 /** POST /chat request body. */
 export interface ChatRequest {

@@ -17,6 +17,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:retry": "vitest run --config vitest.integration.config.ts tests/integration/retry-layer.live.test.ts",
     "lint": "tsc --noEmit",
+    "repl": "tsx src/repl/cli.ts",
     "scenario": "tsx src/scenarios/cli.ts",
     "scenario:goblin-hunt": "tsx src/scenarios/cli.ts goblin-hunt"
   },
