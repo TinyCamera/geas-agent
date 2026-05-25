@@ -15,3 +15,11 @@ export {
   type ToolCallFailure,
   type BuildRecoveryPromptInput,
 } from './recovery.js';
+
+export {
+  createStuckDetector,
+  hashArgs,
+  type StuckDetector,
+  type StuckSignal,
+  type ToolCallRecord,
+} from './stuck.js';
