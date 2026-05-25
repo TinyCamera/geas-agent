@@ -10,6 +10,7 @@ export {
   InMemoryConversationStore,
   deserializeTurn,
   serializeTurn,
+  summariseSessions,
   turnDocId,
 } from './conversation-store.js';
 export type {
@@ -19,6 +20,7 @@ export type {
   PersistedToolCall,
   PersistedTokenUsage,
   PersistedTurn,
+  SessionSummary,
 } from './conversation-store.js';
 
 export { FirestoreConversationStore } from './firestore-conversation-store.js';

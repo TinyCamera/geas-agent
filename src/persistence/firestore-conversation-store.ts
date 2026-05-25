@@ -19,10 +19,12 @@ import type { Firestore, DocumentData } from 'firebase-admin/firestore';
 import {
   deserializeTurn,
   serializeTurn,
+  summariseSessions,
   turnDocId,
   type ConversationKey,
   type ConversationStore,
   type PersistedTurn,
+  type SessionSummary,
 } from './conversation-store.js';
 
 const ROOT_COLLECTION = 'agent_conversations';
@@ -82,5 +84,50 @@ export class FirestoreConversationStore implements ConversationStore {
       turns.push(deserializeTurn(doc.data() as DocumentData));
     });
     return turns;
+  }
+
+  async getSessionTurns(
+    key: ConversationKey,
+    sessionId: string,
+  ): Promise<readonly PersistedTurn[]> {
+    // Equality filter on sessionId + ascending turnIndex. The (sessionId,
+    // turnIndex) composite index is auto-created on first query by the
+    // emulator and a one-line addition to `firestore.indexes.json` in prod;
+    // we keep the index manifest out of this commit since the deploy story
+    // for geas-agent isn't wired yet.
+    const snap = await this.#turnsCollection(key)
+      .where('sessionId', '==', sessionId)
+      .orderBy('turnIndex', 'asc')
+      .get();
+    const turns: PersistedTurn[] = [];
+    snap.forEach((doc) => {
+      turns.push(deserializeTurn(doc.data() as DocumentData));
+    });
+    return turns;
+  }
+
+  async listSessions(uid: string): Promise<readonly SessionSummary[]> {
+    // Enumerate the user's characters by listing the `characters`
+    // subcollection under their doc, then pull every turn for each.
+    // For a v1 dev UID this is fine; if/when a user accumulates many
+    // characters with deep histories this becomes a candidate for a
+    // dedicated `agent_sessions/{uid}/{sessionId}` rollup doc maintained
+    // on write. Filed forward (not blocking #650 acceptance).
+    const userDoc = this.#db.collection(ROOT_COLLECTION).doc(uid);
+    const characterCols = await userDoc.listCollections();
+    const characterColRefs = characterCols.filter(
+      (c) => c.id === CHARACTERS_SUBCOLLECTION,
+    );
+    const allTurns: PersistedTurn[] = [];
+    for (const col of characterColRefs) {
+      const charDocs = await col.listDocuments();
+      for (const charDoc of charDocs) {
+        const snap = await charDoc.collection(TURNS_SUBCOLLECTION).get();
+        snap.forEach((doc) => {
+          allTurns.push(deserializeTurn(doc.data() as DocumentData));
+        });
+      }
+    }
+    return summariseSessions(allTurns);
   }
 }

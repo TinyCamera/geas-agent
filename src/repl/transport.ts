@@ -28,6 +28,7 @@ import {
   PROTOCOL_VERSION,
   type ChatAccepted,
   type ApiError,
+  type ListSessionsResponse,
 } from '../server/wire.js';
 
 export interface TransportOptions {
@@ -64,6 +65,38 @@ const DEFAULT_BACKOFF = [250, 750, 2000] as const;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * One-shot `GET /sessions` helper (#650). The `--list` flag doesn't need a
+ * websocket — it fetches once, prints, exits. Kept colocated with the
+ * `Transport` so the wire details (auth header, error shape) stay in one
+ * place.
+ */
+export async function fetchSessions(input: {
+  readonly baseUrl: string;
+  readonly token: string;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<ListSessionsResponse> {
+  const f = input.fetchImpl ?? fetch;
+  const url = `${input.baseUrl.replace(/\/$/, '')}/sessions`;
+  const res = await f(url, {
+    headers: { authorization: `Bearer ${input.token}` },
+  });
+  const text = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`GET /sessions: ${res.status} ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) {
+    const err = parsed as ApiError;
+    throw new Error(
+      `GET /sessions: ${res.status} ${err.error}: ${err.message}`,
+    );
+  }
+  return parsed as ListSessionsResponse;
 }
 
 /** Parse one inbound WS frame into a typed event. Throws on malformed input. */

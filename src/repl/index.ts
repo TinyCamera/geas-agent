@@ -8,6 +8,7 @@
  */
 export {
   Transport,
+  fetchSessions,
   parseEventFrame,
   type TransportOptions,
   type TransportEvent,
@@ -21,8 +22,16 @@ export {
 } from './render.js';
 export {
   runRepl,
+  runList,
   readConfigFromEnv,
   type CliConfig,
   type CliIo,
   type CliHandles,
 } from './cli.js';
+export { parseArgs, USAGE, type ParsedArgs } from './args.js';
+export {
+  renderListing,
+  clip,
+  formatCost,
+  formatLastActive,
+} from './listing.js';

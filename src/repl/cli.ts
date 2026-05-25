@@ -25,7 +25,7 @@
 
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { Transport, type TransportEvent } from './transport.js';
+import { Transport, fetchSessions, type TransportEvent } from './transport.js';
 import { renderEvent, renderLines, type RenderPiece } from './render.js';
 import {
   applyDecisionInput,
@@ -35,6 +35,8 @@ import {
   serializeTimeout,
   type DecisionState,
 } from './decisions.js';
+import { parseArgs, USAGE } from './args.js';
+import { renderListing } from './listing.js';
 
 export interface CliConfig {
   readonly baseUrl: string;
@@ -77,6 +79,34 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv): CliConfig {
     sessionId: env.GEAS_AGENT_SESSION ?? `repl-${randomUUID()}`,
     color,
   };
+}
+
+/**
+ * `--list` flow: hit `GET /sessions`, render the table to stdout, exit 0.
+ * Errors render to stderr and resolve a non-zero exit code.
+ *
+ * Returns the exit code the caller should propagate.
+ */
+export async function runList(
+  env: NodeJS.ProcessEnv,
+  io: CliIo,
+  fetchImpl: typeof fetch = fetch,
+): Promise<number> {
+  const baseUrl = env.GEAS_AGENT_URL ?? 'http://127.0.0.1:8090';
+  const token = env.GEAS_AGENT_TOKEN ?? '';
+  if (!token) {
+    io.stderr.write('repl: GEAS_AGENT_TOKEN is required\n');
+    return 2;
+  }
+  try {
+    const res = await fetchSessions({ baseUrl, token, fetchImpl });
+    const lines = renderListing(res.sessions);
+    for (const l of lines) io.stdout.write(l + '\n');
+    return 0;
+  } catch (e) {
+    io.stderr.write(`repl: ${(e as Error).message}\n`);
+    return 1;
+  }
 }
 
 /**
@@ -162,6 +192,10 @@ export function runRepl(
   transport.on((ev: TransportEvent) => {
     switch (ev.type) {
       case 'connected':
+        // Print the sessionId on its own line first so the user can copy
+        // it for a later `--session <id>` invocation. Stays on stderr so
+        // piping the REPL's stdout still yields clean chat content.
+        writeErr(`[session ${config.sessionId}]\n`);
         writeErr(
           `[connected to ${config.baseUrl} as ${config.characterId}` +
             (ev.resumeCursor ? ` resume=${ev.resumeCursor}` : '') +
@@ -300,20 +334,40 @@ export function runRepl(
 
 // CLI entrypoint — only when run directly, not when imported by tests.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  try {
-    const config = readConfigFromEnv(process.env);
-    const handles = runRepl(config, {
-      stdin: process.stdin,
-      stdout: process.stdout,
-      stderr: process.stderr,
-    });
-    process.on('SIGINT', () => {
-      process.stderr.write('\n[SIGINT — closing]\n');
-      handles.close();
-    });
-    handles.done.then((code) => process.exit(code));
-  } catch (e) {
-    process.stderr.write(`repl: ${(e as Error).message}\n`);
+  const argv = process.argv.slice(2);
+  const parsed = parseArgs(argv);
+  const io: CliIo = {
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+  };
+
+  if (parsed.mode === 'help') {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
+  if (parsed.mode === 'error') {
+    process.stderr.write(`repl: ${parsed.message}\n${USAGE}`);
     process.exit(2);
+  }
+  if (parsed.mode === 'list') {
+    runList(process.env, io).then((code) => process.exit(code));
+  } else {
+    try {
+      const base = readConfigFromEnv(process.env);
+      const config: CliConfig =
+        parsed.mode === 'resume'
+          ? { ...base, sessionId: parsed.sessionId }
+          : base;
+      const handles = runRepl(config, io);
+      process.on('SIGINT', () => {
+        process.stderr.write('\n[SIGINT — closing]\n');
+        handles.close();
+      });
+      handles.done.then((code) => process.exit(code));
+    } catch (e) {
+      process.stderr.write(`repl: ${(e as Error).message}\n`);
+      process.exit(2);
+    }
   }
 }

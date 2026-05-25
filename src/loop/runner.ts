@@ -140,6 +140,30 @@ export class LoopRunner {
   }
 
   /**
+   * Prepend prior `LlmMessage`s to the conversation buffer before `start`
+   * is called. Used by `IdleSession` to seed a fresh runner with a
+   * previously-persisted session's history (#650 session resume).
+   *
+   * **Why a separate seed call.** A turn's `start()` only accepts the
+   * incoming user message — it can't double as the bootstrap entry
+   * without losing the "one fresh turn per `start`" invariant. Seeding
+   * is an explicit pre-step the caller controls.
+   *
+   * Throws if called after the runner has already advanced past `idle`,
+   * to avoid silently corrupting an in-flight conversation.
+   */
+  seedMessages(msgs: readonly LlmMessage[]): void {
+    if (this.#state !== 'idle') {
+      throw new Error(
+        `LoopRunner.seedMessages: runner is in state '${this.#state}' — seed before start`,
+      );
+    }
+    for (const m of msgs) {
+      this.#messages.push(m);
+    }
+  }
+
+  /**
    * Channel-B entry — the outer transport calls this when geas-server pushes
    * a decision request. The runner queues it; the next time we land in
    * `awaiting-server` (or finish the current LLM turn) we surface it.

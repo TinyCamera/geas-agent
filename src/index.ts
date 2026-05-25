@@ -123,6 +123,8 @@ export {
   type ChatAccepted,
   type ApiError,
   type ResolveDecisionRequest,
+  type SessionListingRow,
+  type ListSessionsResponse,
   type TokenVerifier,
   REJECT_ALL_VERIFIER,
   StaticDevVerifier,
@@ -139,6 +141,7 @@ export {
 } from "./server/index.js";
 export {
   Transport,
+  fetchSessions,
   parseEventFrame,
   type TransportOptions,
   type TransportEvent,
@@ -148,10 +151,15 @@ export {
   type RenderOptions,
   type RenderPiece,
   runRepl,
+  runList,
   readConfigFromEnv,
   type CliConfig,
   type CliIo,
   type CliHandles,
+  parseArgs,
+  USAGE,
+  type ParsedArgs,
+  renderListing,
 } from "./repl/index.js";
 
 const banner = "geas-agent online — MCP client ready";
