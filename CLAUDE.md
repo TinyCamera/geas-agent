@@ -16,7 +16,8 @@ MCP client wrapper (#579) shipped 2026-05-16 — `GeasMcpClient` is the canonica
 
 - `src/mcp/client.ts` — `GeasMcpClient`, the thin wrapper over `@modelcontextprotocol/sdk`'s `Client`. Reconnect-on-drop with capped exponential backoff; returns `Result<T>` instead of throwing.
 - `src/mcp/tools.ts` — hand-written `GEAS_TOOL_NAMES` list + arg shapes. Drift detected at connect time via `listTools()` (missing tool → error, extra → warning).
-- `src/mcp/errors.ts` — `GeasMcpError` discriminated union: `not_connected | transport | unauthorized | tool_error | invalid_response | timeout | aborted`.
+- `src/mcp/validator.ts` — pre-dispatch JSON-schema validator (#658). Caches `inputSchema` from `listTools()` on connect and rejects typos / missing required args / wrong-type args locally before the network round-trip. Extras warn (not fail) so schema drift doesn't block legitimate calls.
+- `src/mcp/errors.ts` — `GeasMcpError` discriminated union: `not_connected | transport | unauthorized | tool_error | invalid_response | timeout | aborted | unknown_tool | missing_required | wrong_type`.
 - `tests/integration/` — live-server tests, opt-in via `npm run test:integration` with `GEAS_LIVE_MCP_URL` + `GEAS_LIVE_DEV_UID` env set.
 
 ## Commands

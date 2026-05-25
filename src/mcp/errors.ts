@@ -13,6 +13,14 @@
  *   - `invalid_response`— server returned a payload we couldn't parse.
  *   - `timeout`         — request exceeded the configured wall budget.
  *   - `aborted`         — caller aborted via AbortSignal.
+ *   - `unknown_tool`    — local validator: tool name not in cached schema surface (#658).
+ *   - `missing_required`— local validator: required arg absent / undefined (#658).
+ *   - `wrong_type`      — local validator: declared arg type mismatch (#658).
+ *
+ * The three `unknown_tool` / `missing_required` / `wrong_type` kinds are
+ * raised before any server round-trip — they're the cheap-model typo-guard.
+ * Extra-arg cases are NOT errors; they surface via `onWarning` so schema
+ * drift between server and wrapper doesn't block legitimate calls.
  */
 export type GeasMcpErrorKind =
   | 'not_connected'
@@ -21,7 +29,10 @@ export type GeasMcpErrorKind =
   | 'tool_error'
   | 'invalid_response'
   | 'timeout'
-  | 'aborted';
+  | 'aborted'
+  | 'unknown_tool'
+  | 'missing_required'
+  | 'wrong_type';
 
 export interface GeasMcpError {
   readonly kind: GeasMcpErrorKind;
@@ -30,6 +41,8 @@ export interface GeasMcpError {
   readonly cause?: unknown;
   /** Tool name when known, for error attribution. */
   readonly tool?: string;
+  /** For validation errors: the arg name(s) at fault. */
+  readonly args?: readonly string[];
 }
 
 export type Ok<T> = { ok: true; value: T };
@@ -47,7 +60,13 @@ export function err(error: GeasMcpError): Err {
 export function makeError(
   kind: GeasMcpErrorKind,
   message: string,
-  opts: { cause?: unknown; tool?: string } = {},
+  opts: { cause?: unknown; tool?: string; args?: readonly string[] } = {},
 ): GeasMcpError {
-  return { kind, message, cause: opts.cause, tool: opts.tool };
+  return {
+    kind,
+    message,
+    cause: opts.cause,
+    tool: opts.tool,
+    args: opts.args,
+  };
 }

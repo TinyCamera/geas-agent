@@ -30,3 +30,12 @@ export {
   type StatusArgs,
   type SwitchCharacterArgs,
 } from './tools.js';
+export {
+  validateToolCall,
+  buildSchemaCache,
+  type ToolInputSchema,
+  type JsonSchemaProperty,
+  type JsonSchemaPrimitive,
+  type ValidationFailureKind,
+  type ValidationResult,
+} from './validator.js';
