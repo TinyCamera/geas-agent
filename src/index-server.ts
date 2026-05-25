@@ -47,10 +47,13 @@
  *   - Not Cloud Run deploy — that's #590. We bind to `GEAS_AGENT_PORT` on
  *     all interfaces. No structured JSON logging, no readiness checks
  *     beyond `GET /healthz` (already in `server.ts`).
- *   - **It does not write to the conversation store.** The runner does not
- *     yet emit `appendTurn` calls — that wiring is the next milestone
- *     ticket. Resume reads what's there; nothing yet writes. Filed as a
- *     follow-up so it doesn't silently regress.
+ *   - **Persistence.** As of #732 each completed turn is written via
+ *     `ConversationStore.appendTurn(...)` so cross-restart `--session <id>`
+ *     resume actually has prior turns to seed from. The factory holds a
+ *     per-session monotonic turn-index counter primed from the store; the
+ *     runner appends one doc at terminal state. Decision-wake turns
+ *     (Channel-B push without a transport-supplied sessionId) skip
+ *     persistence — they're out of scope until the wire-up lands.
  */
 
 import process from 'node:process';
@@ -244,9 +247,28 @@ export async function bootServer(cfg: ServerBootConfig): Promise<BootedServer> {
       uid,
       characterId,
     );
+    // Per-session monotonic turn-index counters. First call primes from
+    // the store so a resumed session continues numbering after the
+    // already-persisted turns; subsequent calls bump in-memory.
+    const turnCounters = new Map<string, Promise<number>>();
+    const nextIndexFor = (sessionId: string): Promise<number> => {
+      const prev = turnCounters.get(sessionId);
+      const next = (async () => {
+        if (prev !== undefined) return (await prev) + 1;
+        const existing = await store.getSessionTurns(
+          { uid, characterId },
+          sessionId,
+        );
+        // First write into this session: index = count of already-persisted.
+        return existing.length;
+      })();
+      turnCounters.set(sessionId, next);
+      return next;
+    };
+
     return new IdleSession({
       emit,
-      runnerFactory: () => {
+      runnerFactory: (ctx) => {
         const runner = new LoopRunner({
           llm: llmForThisSession,
           dispatch: buildDispatcher(mcp),
@@ -256,6 +278,20 @@ export async function bootServer(cfg: ServerBootConfig): Promise<BootedServer> {
           tools,
           system: [{ type: 'text', text: systemPrompt }],
           emit,
+          // Wire persistence iff the transport handed us a sessionId.
+          // Decision-wake (Channel-B push) currently has no sessionId
+          // and skips persistence — out of scope here.
+          ...(ctx?.sessionId
+            ? {
+                persistence: {
+                  store,
+                  key: { uid, characterId },
+                  sessionId: ctx.sessionId,
+                  displayName: ctx.displayName ?? characterId,
+                  nextTurnIndex: () => nextIndexFor(ctx.sessionId!),
+                },
+              }
+            : {}),
         });
         // Resume from the most recent prior session, if any. Greenfield
         // characters get an empty buffer. Resume is fire-and-forget on
@@ -264,7 +300,18 @@ export async function bootServer(cfg: ServerBootConfig): Promise<BootedServer> {
         // the REPL is many ms slower than a Firestore read). On the
         // off-chance it hasn't, the runner just starts with an empty
         // buffer for that turn — degrade-not-fail.
-        void resumeLatestSession({ store, uid, characterId, runner });
+        if (ctx?.sessionId) {
+          // Seed from the specified session (cross-restart resume).
+          void seedRunnerFromSession({
+            runner,
+            store,
+            key: { uid, characterId },
+            sessionId: ctx.sessionId,
+          });
+        } else {
+          // Fallback: best-effort latest-session seed (legacy behaviour).
+          void resumeLatestSession({ store, uid, characterId, runner });
+        }
         return runner;
       },
     });

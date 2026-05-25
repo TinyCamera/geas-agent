@@ -199,7 +199,7 @@ export function createServer(opts: ServerOptions): RunningServer {
     // the POST response. A throw from `deliverUserMessage` only happens
     // if the session was closed — treat as 409.
     queueMicrotask(() => {
-      session.deliverUserMessage(message).catch(() => {
+      session.deliverUserMessage(message, { sessionId }).catch(() => {
         // Already surfaced as a runner emit-event; nothing more to do.
       });
     });
