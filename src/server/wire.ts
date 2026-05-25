@@ -161,3 +161,25 @@ export interface ResolveDecisionRequest {
   /** Free-text reply that gets threaded back into the conversation. */
   readonly text: string;
 }
+
+/**
+ * Row in the `GET /sessions` response (#650). One entry per
+ * `(characterId, sessionId)` pair belonging to the authenticated UID.
+ */
+export interface SessionListingRow {
+  readonly sessionId: string;
+  readonly characterId: string;
+  readonly displayName: string;
+  /** ISO-8601 UTC of the most recent turn. */
+  readonly lastActive: string;
+  readonly turns: number;
+  readonly totalCostUsd: number;
+}
+
+/** Response body for `GET /sessions`. Empty `sessions` is valid (no history). */
+export interface ListSessionsResponse {
+  readonly protocolVersion: typeof PROTOCOL_VERSION;
+  readonly uid: string;
+  readonly sessions: readonly SessionListingRow[];
+  readonly ts: number;
+}

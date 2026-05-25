@@ -28,11 +28,13 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { TokenVerifier } from './auth.js';
 import type { EventHub, Subscriber } from './hub.js';
 import type { SessionRegistry } from './session-registry.js';
+import type { ConversationStore } from '../persistence/conversation-store.js';
 import {
   PROTOCOL_VERSION,
   type ApiError,
   type ChatAccepted,
   type ChatRequest,
+  type ListSessionsResponse,
   type ResolveDecisionRequest,
 } from './wire.js';
 
@@ -40,6 +42,12 @@ export interface ServerOptions {
   readonly verifier: TokenVerifier;
   readonly registry: SessionRegistry;
   readonly hub: EventHub;
+  /**
+   * Conversation history store backing `GET /sessions` (#650). If omitted,
+   * `GET /sessions` responds 503 — tests that don't exercise the listing
+   * path can leave this out.
+   */
+  readonly store?: ConversationStore;
   /** Override Date.now() for tests. */
   readonly now?: () => number;
   /** Ping interval ms (default 30s, 0 disables). */
@@ -103,6 +111,50 @@ export function createServer(opts: ServerOptions): RunningServer {
   app.use(express.json({ limit: '64kb' }));
 
   // ---- HTTP routes ----
+
+  app.get('/sessions', async (req, res) => {
+    const token = bearer(req);
+    if (!token) {
+      res
+        .status(401)
+        .json(apiError('unauthorized', 'missing bearer token'));
+      return;
+    }
+    let uid: string;
+    try {
+      ({ uid } = await opts.verifier.verify(token));
+    } catch (e) {
+      res.status(401).json(apiError('unauthorized', (e as Error).message));
+      return;
+    }
+    if (!opts.store) {
+      res
+        .status(503)
+        .json(apiError('unavailable', 'session listing not configured'));
+      return;
+    }
+    try {
+      const sessions = await opts.store.listSessions(uid);
+      const body: ListSessionsResponse = {
+        protocolVersion: PROTOCOL_VERSION,
+        uid,
+        sessions: sessions.map((s) => ({
+          sessionId: s.sessionId,
+          characterId: s.characterId,
+          displayName: s.displayName,
+          lastActive: s.lastActive,
+          turns: s.turns,
+          totalCostUsd: s.totalCostUsd,
+        })),
+        ts: now(),
+      };
+      res.status(200).json(body);
+    } catch (e) {
+      res
+        .status(500)
+        .json(apiError('internal', `listSessions failed: ${(e as Error).message}`));
+    }
+  });
 
   app.get('/healthz', (_req, res) => {
     res.status(200).json({

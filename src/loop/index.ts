@@ -47,3 +47,5 @@ export {
   type SessionTelemetry,
   type WakeCause,
 } from './session.js';
+
+export { seedRunnerFromSession, type SeedRunnerInput } from './resume.js';

@@ -102,6 +102,27 @@ export interface ConversationKey {
   readonly characterId: string;
 }
 
+/**
+ * Listing row for a single session — what the REPL `--list` and the
+ * `GET /sessions` endpoint return (#650).
+ *
+ * One row per `(characterId, sessionId)` pair: each character may have
+ * many sessions across time, and a session is the unit you `--session`
+ * resume into. Rolled up from the per-turn docs:
+ *   - `lastActive` = max(timestamp) across the session's turns.
+ *   - `turns` = number of persisted turns in the session.
+ *   - `totalCostUsd` = sum of per-turn `totalCostUsd` (telemetry from #612).
+ */
+export interface SessionSummary {
+  readonly sessionId: string;
+  readonly characterId: string;
+  readonly displayName: string;
+  /** ISO-8601 UTC of the most recent turn in the session. */
+  readonly lastActive: string;
+  readonly turns: number;
+  readonly totalCostUsd: number;
+}
+
 /** Storage interface — append + read. No mutate, no delete. */
 export interface ConversationStore {
   /**
@@ -127,6 +148,27 @@ export interface ConversationStore {
    * summariser should call it.
    */
   getAllTurns(key: ConversationKey): Promise<readonly PersistedTurn[]>;
+
+  /**
+   * All turns for one `(uid, characterId, sessionId)`, ordered ascending
+   * by `turnIndex`. Used by `IdleSession` on resume to bootstrap the LLM
+   * context from a previously-persisted session (#650).
+   *
+   * Returns `[]` for an unknown session — callers treat that as "no
+   * prior context, start fresh".
+   */
+  getSessionTurns(
+    key: ConversationKey,
+    sessionId: string,
+  ): Promise<readonly PersistedTurn[]>;
+
+  /**
+   * Sessions belonging to one UID, rolled up from the per-turn docs.
+   * Ordered most-recently-active first (so the `--list` table reads
+   * naturally without the caller sorting). Returns `[]` if the UID has
+   * no persisted history. (#650)
+   */
+  listSessions(uid: string): Promise<readonly SessionSummary[]>;
 }
 
 /** Zero-pad to 12 digits so lex sort = numeric sort up to 10^12 turns. */
@@ -227,6 +269,54 @@ export function deserializeTurn(raw: Record<string, unknown>): PersistedTurn {
 }
 
 /**
+ * Roll up a flat list of persisted turns into one row per `sessionId`.
+ * Shared by `InMemoryConversationStore.listSessions` and
+ * `FirestoreConversationStore.listSessions` — the rollup logic is identical;
+ * only the way the input turns are fetched differs.
+ *
+ * Returns sessions sorted by `lastActive` descending (most-recent first).
+ */
+export function summariseSessions(
+  turns: readonly PersistedTurn[],
+): readonly SessionSummary[] {
+  const acc = new Map<
+    string,
+    {
+      sessionId: string;
+      characterId: string;
+      displayName: string;
+      lastActive: string;
+      turns: number;
+      totalCostUsd: number;
+    }
+  >();
+  for (const t of turns) {
+    const existing = acc.get(t.sessionId);
+    if (!existing) {
+      acc.set(t.sessionId, {
+        sessionId: t.sessionId,
+        characterId: t.characterId,
+        displayName: t.displayName,
+        lastActive: t.timestamp,
+        turns: 1,
+        totalCostUsd: t.totalCostUsd,
+      });
+    } else {
+      existing.turns += 1;
+      existing.totalCostUsd += t.totalCostUsd;
+      if (t.timestamp > existing.lastActive) {
+        existing.lastActive = t.timestamp;
+        // Display name on the most recent turn wins — names may have changed.
+        existing.displayName = t.displayName;
+      }
+    }
+  }
+  return [...acc.values()].sort((a, b) =>
+    a.lastActive < b.lastActive ? 1 : a.lastActive > b.lastActive ? -1 : 0,
+  );
+}
+
+/**
  * In-memory implementation. Per-UID, per-character maps. Tests + local-only
  * runs (no Firestore configured) use this. Production wires
  * `FirestoreConversationStore`.
@@ -263,5 +353,26 @@ export class InMemoryConversationStore implements ConversationStore {
     return [...bucket.entries()]
       .sort(([a], [b]) => a - b)
       .map(([, raw]) => deserializeTurn(raw));
+  }
+
+  async getSessionTurns(
+    key: ConversationKey,
+    sessionId: string,
+  ): Promise<readonly PersistedTurn[]> {
+    const all = await this.getAllTurns(key);
+    return all.filter((t) => t.sessionId === sessionId);
+  }
+
+  async listSessions(uid: string): Promise<readonly SessionSummary[]> {
+    // Scan every (uid::characterId) bucket whose first segment matches.
+    const prefix = `${uid}::`;
+    const all: PersistedTurn[] = [];
+    for (const [k, bucket] of this.#docs) {
+      if (!k.startsWith(prefix)) continue;
+      for (const raw of bucket.values()) {
+        all.push(deserializeTurn(raw));
+      }
+    }
+    return summariseSessions(all);
   }
 }

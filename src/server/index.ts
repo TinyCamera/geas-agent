@@ -20,6 +20,8 @@ export {
   type ChatAccepted,
   type ApiError,
   type ResolveDecisionRequest,
+  type SessionListingRow,
+  type ListSessionsResponse,
 } from './wire.js';
 
 export {

@@ -3,6 +3,7 @@ import {
   InMemoryConversationStore,
   deserializeTurn,
   serializeTurn,
+  summariseSessions,
   turnDocId,
   type ConversationKey,
   type PersistedTurn,
@@ -110,6 +111,35 @@ describe('serializeTurn / deserializeTurn', () => {
   });
 });
 
+describe('summariseSessions', () => {
+  it('groups by sessionId and picks the latest display name', () => {
+    const turns: PersistedTurn[] = [
+      makeTurn(0, {
+        sessionId: 's1',
+        displayName: 'Older',
+        timestamp: '2026-05-01T00:00:00.000Z',
+        totalCostUsd: 0.01,
+      }),
+      makeTurn(1, {
+        sessionId: 's1',
+        displayName: 'Newer',
+        timestamp: '2026-05-02T00:00:00.000Z',
+        totalCostUsd: 0.02,
+      }),
+    ];
+    const out = summariseSessions(turns);
+    expect(out).toHaveLength(1);
+    expect(out[0].displayName).toBe('Newer');
+    expect(out[0].turns).toBe(2);
+    expect(out[0].totalCostUsd).toBeCloseTo(0.03, 6);
+    expect(out[0].lastActive).toBe('2026-05-02T00:00:00.000Z');
+  });
+
+  it('returns [] for empty input', () => {
+    expect(summariseSessions([])).toEqual([]);
+  });
+});
+
 describe('InMemoryConversationStore', () => {
   const keyA: ConversationKey = { uid: 'uid-A', characterId: 'char-1' };
   const keyB: ConversationKey = { uid: 'uid-B', characterId: 'char-1' };
@@ -181,6 +211,75 @@ describe('InMemoryConversationStore', () => {
     const all = await s.getAllTurns(keyA);
     expect(all).toHaveLength(1);
     expect(all[0].userMessage).toBe('second');
+  });
+
+  it('getSessionTurns filters by sessionId', async () => {
+    const s = new InMemoryConversationStore();
+    await s.appendTurn(keyA, makeTurn(0, { sessionId: 'sess-1' }));
+    await s.appendTurn(keyA, makeTurn(1, { sessionId: 'sess-2' }));
+    await s.appendTurn(keyA, makeTurn(2, { sessionId: 'sess-1' }));
+    const got = await s.getSessionTurns(keyA, 'sess-1');
+    expect(got.map((t) => t.turnIndex)).toEqual([0, 2]);
+  });
+
+  it('getSessionTurns returns [] for unknown session', async () => {
+    const s = new InMemoryConversationStore();
+    await s.appendTurn(keyA, makeTurn(0, { sessionId: 'sess-1' }));
+    expect(await s.getSessionTurns(keyA, 'sess-other')).toEqual([]);
+  });
+
+  it('listSessions rolls turns into per-session rows ordered most-recent first', async () => {
+    const s = new InMemoryConversationStore();
+    await s.appendTurn(
+      keyA,
+      makeTurn(0, {
+        sessionId: 'sess-old',
+        timestamp: '2026-05-19T22:30:00.000Z',
+        totalCostUsd: 0.01,
+      }),
+    );
+    await s.appendTurn(
+      keyA,
+      makeTurn(1, {
+        sessionId: 'sess-old',
+        timestamp: '2026-05-19T22:31:00.000Z',
+        totalCostUsd: 0.02,
+      }),
+    );
+    await s.appendTurn(
+      keyA2,
+      makeTurn(0, {
+        sessionId: 'sess-new',
+        characterId: 'char-2',
+        displayName: 'goblin-bait',
+        timestamp: '2026-05-21T09:14:00.000Z',
+        totalCostUsd: 0.084,
+      }),
+    );
+    const list = await s.listSessions('uid-A');
+    expect(list.map((r) => r.sessionId)).toEqual(['sess-new', 'sess-old']);
+    const old = list.find((r) => r.sessionId === 'sess-old')!;
+    expect(old.turns).toBe(2);
+    expect(old.totalCostUsd).toBeCloseTo(0.03, 6);
+    expect(old.lastActive).toBe('2026-05-19T22:31:00.000Z');
+    const fresh = list.find((r) => r.sessionId === 'sess-new')!;
+    expect(fresh.characterId).toBe('char-2');
+    expect(fresh.displayName).toBe('goblin-bait');
+  });
+
+  it('listSessions scopes by uid (other users invisible)', async () => {
+    const s = new InMemoryConversationStore();
+    await s.appendTurn(keyA, makeTurn(0, { sessionId: 'sess-A' }));
+    await s.appendTurn(keyB, makeTurn(0, { sessionId: 'sess-B' }));
+    const a = await s.listSessions('uid-A');
+    const b = await s.listSessions('uid-B');
+    expect(a.map((r) => r.sessionId)).toEqual(['sess-A']);
+    expect(b.map((r) => r.sessionId)).toEqual(['sess-B']);
+  });
+
+  it('listSessions returns [] for a UID with no history', async () => {
+    const s = new InMemoryConversationStore();
+    expect(await s.listSessions('nobody')).toEqual([]);
   });
 
   it('survives "process restart" — second store reads back from a serialised dump', async () => {
