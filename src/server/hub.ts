@@ -129,10 +129,10 @@ export class EventHub {
 
   /**
    * Push a telemetry record onto a stream (buffered + fanned out like any
-   * other event). Producer wiring (a `TelemetryProvider` decorator that
-   * pumps records here) is filed as follow-up of #647; for #648 this
-   * exists so the REPL has a renderable wire surface and tests can drive
-   * the path end-to-end.
+   * other event). The producer-side adapter that turns a
+   * `TelemetryRecord` into one of these calls lives in
+   * `./telemetry-sink.ts` (`createTelemetrySink` / `wrapLlmWithTelemetry`),
+   * landed in #725.
    */
   emitTelemetry(
     uid: string,

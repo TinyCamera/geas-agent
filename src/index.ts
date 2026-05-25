@@ -138,6 +138,9 @@ export {
   createServer,
   type ServerOptions,
   type RunningServer,
+  createTelemetrySink,
+  wrapLlmWithTelemetry,
+  telemetryTag,
 } from "./server/index.js";
 export {
   Transport,

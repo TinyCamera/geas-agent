@@ -42,3 +42,8 @@ export {
   type ServerOptions,
   type RunningServer,
 } from './server.js';
+export {
+  createTelemetrySink,
+  wrapLlmWithTelemetry,
+  telemetryTag,
+} from './telemetry-sink.js';
