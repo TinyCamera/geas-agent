@@ -60,7 +60,6 @@ export const GEAS_TOOL_NAMES = [
   'update_soul',
   // Misc
   'respawn',
-  'ui_ping',
 ] as const;
 
 export type GeasToolName = (typeof GEAS_TOOL_NAMES)[number];

@@ -18,7 +18,8 @@ MCP client wrapper (#579) shipped 2026-05-16 — `GeasMcpClient` is the canonica
 - `src/mcp/tools.ts` — hand-written `GEAS_TOOL_NAMES` list + arg shapes. Drift detected at connect time via `listTools()` (missing tool → error, extra → warning).
 - `src/mcp/validator.ts` — pre-dispatch JSON-schema validator (#658). Caches `inputSchema` from `listTools()` on connect and rejects typos / missing required args / wrong-type args locally before the network round-trip. Extras warn (not fail) so schema drift doesn't block legitimate calls.
 - `src/mcp/errors.ts` — `GeasMcpError` discriminated union: `not_connected | transport | unauthorized | tool_error | invalid_response | timeout | aborted | unknown_tool | missing_required | wrong_type`.
-- `tests/integration/` — live-server tests, opt-in via `npm run test:integration` with `GEAS_LIVE_MCP_URL` + `GEAS_LIVE_DEV_UID` env set.
+- `src/loop/run-with-retry.ts` — composed validation+retry contract (#662). Wires `[validator → MCP dispatch → stuck detector → recovery prompt → retry budget]` into one `runWithRetry()` call the future agent loop drives once per tool intent. The recovery driver (LLM-backed or scripted) decides each retry; the helper owns the policy.
+- `tests/integration/` — live-server tests, opt-in via `npm run test:integration` with `GEAS_LIVE_MCP_URL` + `GEAS_LIVE_DEV_UID` env set. Retry-layer contract tests live in `retry-layer.live.test.ts` and run via `npm run test:retry` (one file per failure mode; one real-LLM leg gated on `ANTHROPIC_API_KEY`).
 
 ## Commands
 
