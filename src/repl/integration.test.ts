@@ -156,6 +156,7 @@ describe('REPL end-to-end against Channel A', () => {
         characterId: 'char-1',
         sessionId: 'repl-it-1',
         color: false,
+        tokenIsDefault: false,
       },
       { stdin: stdin.stream, stdout, stderr },
     );
@@ -215,6 +216,7 @@ describe('REPL end-to-end against Channel A', () => {
         characterId: 'c',
         sessionId: 's',
         color: false,
+        tokenIsDefault: false,
       },
       { stdin: stdin.stream, stdout, stderr },
       // Tighten backoff so the test stays fast.

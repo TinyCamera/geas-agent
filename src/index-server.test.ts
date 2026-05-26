@@ -112,8 +112,11 @@ describe('readBootConfigFromEnv', () => {
   it('defaults sensibly when env is empty', () => {
     const cfg = readBootConfigFromEnv({});
     expect(cfg.mcpUrl).toBe('http://localhost:8088/mcp');
-    expect(cfg.devUid).toBe('agent-dev');
-    expect(cfg.port).toBe(3001);
+    // #735: defaults now match the geas-server local stack (UID nick-dev)
+    // and the REPL's GEAS_AGENT_URL default (port 8090) so a first-run user
+    // doesn't have to set anything beyond ANTHROPIC_API_KEY.
+    expect(cfg.devUid).toBe('nick-dev');
+    expect(cfg.port).toBe(8090);
     expect(cfg.anthropicApiKey).toBeNull();
     expect(cfg.useFirestore).toBe(false);
   });
@@ -138,6 +141,54 @@ describe('readBootConfigFromEnv', () => {
   it('throws on a non-positive port', () => {
     expect(() => readBootConfigFromEnv({ GEAS_AGENT_PORT: '0' })).toThrow();
     expect(() => readBootConfigFromEnv({ GEAS_AGENT_PORT: 'abc' })).toThrow();
+  });
+});
+
+describe('bootServer — first-run env contract (#735)', () => {
+  it('boots from a fully empty env when given the NoopProvider + mcp override', async () => {
+    // Regresses the four env-var paper-cuts from #735:
+    //  1. GEAS_AGENT_TOKEN unset — server doesn't read it; verifier hard-codes
+    //     'dev-token'. (Verified end-to-end by the WS connect below using
+    //     token=dev-token without setting any env.)
+    //  2. GEAS_AGENT_CHARACTER — server doesn't require it; per-character
+    //     sessions are minted on first chat. (Not exercised here — see the
+    //     full-turn test below.)
+    //  3. GEAS_AGENT_PORT default — must be 8090, aligned with the REPL's
+    //     GEAS_AGENT_URL default.
+    //  4. GEAS_DEV_UID default — must be 'nick-dev', matching the
+    //     geas-server local stack.
+    const cfg = readBootConfigFromEnv({});
+    expect(cfg.port).toBe(8090);
+    expect(cfg.devUid).toBe('nick-dev');
+
+    const { client: mcpClient, server: fakeMcp } =
+      await buildLinkedMcpClient();
+    // We override `port: 0` so the test doesn't fight a real `:8090` bind,
+    // but every OTHER default flows through from the empty-env config.
+    const booted = await bootServer({
+      ...cfg,
+      port: 0,
+      llmOverride: new NoopProvider({ script: [] }),
+      mcpOverride: mcpClient,
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${booted.port}/healthz`);
+      expect(res.status).toBe(200);
+      // The static dev verifier should accept the literal default token
+      // the REPL falls back to (#735). Open the WS as nick-dev with
+      // token=dev-token and expect a clean upgrade.
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${booted.port}/events?token=dev-token&characterId=char-1`,
+      );
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', () => resolve());
+        ws.once('error', reject);
+      });
+      ws.close();
+    } finally {
+      await booted.close();
+      await fakeMcp.close();
+    }
   });
 });
 

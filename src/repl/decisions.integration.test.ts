@@ -120,6 +120,7 @@ async function runCase(
       characterId: 'char-1',
       sessionId: 's1',
       color: false,
+      tokenIsDefault: false,
     },
     { stdin: stdin.stream, stdout, stderr },
   );

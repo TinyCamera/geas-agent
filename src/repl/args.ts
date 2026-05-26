@@ -18,6 +18,7 @@ export type ParsedArgs =
   | { readonly mode: 'list' }
   | { readonly mode: 'resume'; readonly sessionId: string }
   | { readonly mode: 'new' }
+  | { readonly mode: 'new-character'; readonly name?: string }
   | { readonly mode: 'error'; readonly message: string };
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -34,6 +35,18 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     if (a === '--new') {
       flags.set('new', true);
+      continue;
+    }
+    if (a === '--new-character') {
+      // Optional name argument follows; if next token is missing or a flag,
+      // treat as "no name supplied" and let the REPL pick a default.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('-')) {
+        flags.set('new-character', next);
+        i += 1;
+      } else {
+        flags.set('new-character', true);
+      }
       continue;
     }
     if (a === '--session') {
@@ -53,7 +66,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 
   if (flags.has('help')) return { mode: 'help' };
 
-  const exclusive = ['list', 'session', 'new'].filter((f) => flags.has(f));
+  const exclusive = ['list', 'session', 'new', 'new-character'].filter((f) =>
+    flags.has(f),
+  );
   if (exclusive.length > 1) {
     return {
       mode: 'error',
@@ -67,18 +82,34 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   if (flags.has('session')) {
     return { mode: 'resume', sessionId: flags.get('session') as string };
   }
+  if (flags.has('new-character')) {
+    const v = flags.get('new-character');
+    return {
+      mode: 'new-character',
+      ...(typeof v === 'string' ? { name: v } : {}),
+    };
+  }
   return { mode: 'new' };
 }
 
-export const USAGE = `Usage: npm run repl -- [--list | --session <id> | --new]
+export const USAGE = `Usage: npm run repl -- [--list | --session <id> | --new | --new-character [name]]
 
-  --list             List sessions for the current GEAS_DEV_UID and exit.
-  --session <id>     Resume a previously-stored session by id.
-  --new              Start a fresh session (default if no flag given).
-  -h, --help         Show this help.
+  --list                  List sessions for the current GEAS_DEV_UID and exit.
+  --session <id>          Resume a previously-stored session by id.
+  --new                   Start a fresh session (default if no flag given).
+  --new-character [name]  Create a fresh character via MCP, then start a
+                          REPL session against it. Name defaults to
+                          "repl-user". Prints the new characterId on a
+                          dedicated line so you can copy it for future
+                          GEAS_AGENT_CHARACTER values.
+  -h, --help              Show this help.
 
 Env:
   GEAS_AGENT_URL        default http://127.0.0.1:8090
-  GEAS_AGENT_TOKEN      required — bearer token
-  GEAS_AGENT_CHARACTER  required except for --list
+  GEAS_AGENT_TOKEN      default "dev-token" (suitable for local dev only)
+  GEAS_AGENT_CHARACTER  required except for --list and --new-character
+  GEAS_MCP_URL          default http://localhost:8088/mcp (used by
+                        --new-character to talk to geas-server)
+  GEAS_DEV_UID          informational — soul/character namespacing
+                        (default "nick-dev" matches geas-server local stack)
 `;

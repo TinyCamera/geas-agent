@@ -19,12 +19,20 @@
  * **Config.** Reads from env so neither flags nor a config file are
  * needed for the smoke test:
  *   GEAS_AGENT_URL       default http://127.0.0.1:8090
- *   GEAS_AGENT_TOKEN     required — bearer / WS token
- *   GEAS_AGENT_CHARACTER required — characterId to drive
+ *   GEAS_AGENT_TOKEN     default "dev-token" (matches StaticDevVerifier in
+ *                        the agent server; ONLY suitable for local dev — a
+ *                        startup warning is printed when the default is used)
+ *   GEAS_AGENT_CHARACTER required for chat sessions; can be sidestepped by
+ *                        running `--new-character` to mint one and use it,
+ *                        or `--list` to see existing sessions.
+ *   GEAS_MCP_URL         default http://localhost:8088/mcp (only consulted by
+ *                        `--new-character`, which calls the geas-server MCP
+ *                        endpoint directly to mint a character).
  */
 
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { GeasMcpClient } from '../mcp/client.js';
 import { Transport, fetchSessions, type TransportEvent } from './transport.js';
 import { renderEvent, renderLines, type RenderPiece } from './render.js';
 import {
@@ -44,7 +52,47 @@ export interface CliConfig {
   readonly characterId: string;
   readonly sessionId: string;
   readonly color: boolean;
+  /**
+   * True when `GEAS_AGENT_TOKEN` was unset and we defaulted to `dev-token`.
+   * The caller prints a one-line warning on session start so dev-mode use
+   * is visible — production callers MUST set the env var.
+   */
+  readonly tokenIsDefault: boolean;
 }
+
+/** Default token: matches `StaticDevVerifier(['dev-token', GEAS_DEV_UID])`. */
+export const DEFAULT_AGENT_TOKEN = 'dev-token';
+
+/** Default name when `--new-character` is invoked with no name argument. */
+export const DEFAULT_NEW_CHARACTER_NAME = 'repl-user';
+
+/**
+ * Help-text body printed when `GEAS_AGENT_CHARACTER` is missing. Exposed so
+ * a unit test can snapshot exactly what a first-run user sees.
+ */
+export const MISSING_CHARACTER_HELP = `repl: GEAS_AGENT_CHARACTER is required.
+
+  Set one of:
+    export GEAS_AGENT_CHARACTER=<your-character-id>
+    npm run repl -- --list             # see existing sessions
+    npm run repl -- --new-character    # create a fresh character and use it
+
+  See docs/dev.md → "Try the REPL" for the full local-dev runbook.
+`;
+
+/**
+ * Help-text body printed when the REPL can't reach the agent server. Exposed
+ * so the same hint shows up consistently regardless of which call failed.
+ */
+export const UNREACHABLE_SERVER_HELP = `repl: could not reach the geas-agent server.
+
+  Check that:
+    - 'npm run dev:server' is running in another terminal
+    - GEAS_AGENT_PORT (server) and GEAS_AGENT_URL (this REPL) point at
+      the same port (defaults: server 8090, REPL http://127.0.0.1:8090)
+
+  See docs/dev.md → "Try the REPL" for the full local-dev runbook.
+`;
 
 export interface CliIo {
   readonly stdin: NodeJS.ReadableStream;
@@ -59,15 +107,18 @@ export interface CliHandles {
   close(): void;
 }
 
-export function readConfigFromEnv(env: NodeJS.ProcessEnv): CliConfig {
+export function readConfigFromEnv(
+  env: NodeJS.ProcessEnv,
+  opts: { readonly requireCharacter?: boolean } = {},
+): CliConfig {
+  const requireCharacter = opts.requireCharacter ?? true;
   const baseUrl = env.GEAS_AGENT_URL ?? 'http://127.0.0.1:8090';
-  const token = env.GEAS_AGENT_TOKEN ?? '';
+  const tokenFromEnv = env.GEAS_AGENT_TOKEN;
+  const tokenIsDefault = !tokenFromEnv;
+  const token = tokenFromEnv ?? DEFAULT_AGENT_TOKEN;
   const characterId = env.GEAS_AGENT_CHARACTER ?? '';
-  if (!token) {
-    throw new Error('GEAS_AGENT_TOKEN is required');
-  }
-  if (!characterId) {
-    throw new Error('GEAS_AGENT_CHARACTER is required');
+  if (requireCharacter && !characterId) {
+    throw new Error(MISSING_CHARACTER_HELP);
   }
   // Disable colour in non-TTY (piped tests, CI). NO_COLOR overrides.
   const isTty = !!(process.stdout as NodeJS.WriteStream).isTTY;
@@ -78,6 +129,7 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv): CliConfig {
     characterId,
     sessionId: env.GEAS_AGENT_SESSION ?? `repl-${randomUUID()}`,
     color,
+    tokenIsDefault,
   };
 }
 
@@ -93,10 +145,12 @@ export async function runList(
   fetchImpl: typeof fetch = fetch,
 ): Promise<number> {
   const baseUrl = env.GEAS_AGENT_URL ?? 'http://127.0.0.1:8090';
-  const token = env.GEAS_AGENT_TOKEN ?? '';
-  if (!token) {
-    io.stderr.write('repl: GEAS_AGENT_TOKEN is required\n');
-    return 2;
+  const tokenFromEnv = env.GEAS_AGENT_TOKEN;
+  const token = tokenFromEnv ?? DEFAULT_AGENT_TOKEN;
+  if (!tokenFromEnv) {
+    io.stderr.write(
+      `[GEAS_AGENT_TOKEN unset — using default "${DEFAULT_AGENT_TOKEN}" (dev-only)]\n`,
+    );
   }
   try {
     const res = await fetchSessions({ baseUrl, token, fetchImpl });
@@ -105,7 +159,110 @@ export async function runList(
     return 0;
   } catch (e) {
     io.stderr.write(`repl: ${(e as Error).message}\n`);
+    io.stderr.write(UNREACHABLE_SERVER_HELP);
     return 1;
+  }
+}
+
+/**
+ * Pull a `characterId` out of a `create_character` MCP response. The server's
+ * payload shape has drifted across releases — we look in the obvious places
+ * (`structuredContent.characterId`, `structuredContent.id`, then any
+ * `text`-typed content blob with a JSON object carrying the same keys).
+ *
+ * Returns null when we can't find one — caller renders a fail-fast error
+ * pointing the user at the raw payload rather than guessing.
+ */
+export function extractCharacterId(
+  response: { structuredContent?: Record<string, unknown>; content?: Array<{ type: string; text?: string }> },
+): string | null {
+  const sc = response.structuredContent ?? {};
+  for (const k of ['characterId', 'id', 'character_id'] as const) {
+    const v = sc[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  // Some `create_character` responses wrap the new character under a nested
+  // `character` / `result` key (e.g. `{ character: { id, name, ... } }`).
+  for (const wrap of ['character', 'result'] as const) {
+    const w = sc[wrap];
+    if (w && typeof w === 'object') {
+      const o = w as Record<string, unknown>;
+      for (const k of ['characterId', 'id', 'character_id'] as const) {
+        const v = o[k];
+        if (typeof v === 'string' && v.length > 0) return v;
+      }
+    }
+  }
+  // Last resort: scan `text` content blocks for a JSON-shaped id.
+  for (const c of response.content ?? []) {
+    if (c.type !== 'text' || !c.text) continue;
+    try {
+      const parsed = JSON.parse(c.text) as Record<string, unknown>;
+      for (const k of ['characterId', 'id', 'character_id'] as const) {
+        const v = parsed[k];
+        if (typeof v === 'string' && v.length > 0) return v;
+      }
+    } catch {
+      // not JSON; ignore
+    }
+  }
+  return null;
+}
+
+/**
+ * `--new-character` flow: connect directly to geas-server MCP, mint a fresh
+ * character, print its id, then hand back the id so the REPL can start a
+ * session against it.
+ *
+ * Tests inject `mcpFactory` so we don't need a live MCP endpoint. Production
+ * uses the default factory which builds a real `GeasMcpClient` pointed at
+ * `GEAS_MCP_URL`.
+ */
+export async function mintCharacter(
+  env: NodeJS.ProcessEnv,
+  io: CliIo,
+  name: string,
+  mcpFactory?: (opts: { url: string; devUid: string; bearerToken?: string }) => GeasMcpClient,
+): Promise<string | null> {
+  const mcpUrl = env.GEAS_MCP_URL ?? 'http://localhost:8088/mcp';
+  const devUid = env.GEAS_DEV_UID ?? 'nick-dev';
+  const bearer = env.GEAS_BEARER_TOKEN;
+  const make = mcpFactory ?? ((o) => new GeasMcpClient(o));
+  const client = make({ url: mcpUrl, devUid, ...(bearer ? { bearerToken: bearer } : {}) });
+  const conn = await client.connect();
+  if (!conn.ok) {
+    io.stderr.write(
+      `repl: MCP connect failed (${mcpUrl}): ${conn.error.kind} — ${conn.error.message}\n`,
+    );
+    io.stderr.write(UNREACHABLE_SERVER_HELP);
+    return null;
+  }
+  try {
+    const res = await client.callTool('create_character', { name });
+    if (!res.ok) {
+      io.stderr.write(
+        `repl: create_character failed: ${res.error.kind} — ${res.error.message}\n`,
+      );
+      return null;
+    }
+    const id = extractCharacterId(res.value);
+    if (!id) {
+      io.stderr.write(
+        'repl: create_character succeeded but no characterId in response. Raw payload:\n',
+      );
+      io.stderr.write(JSON.stringify(res.value).slice(0, 2000) + '\n');
+      return null;
+    }
+    // Recognisable line so users can grep / copy it.
+    io.stdout.write(`GEAS_AGENT_CHARACTER=${id}\n`);
+    io.stderr.write(
+      `[created character "${name}" id=${id} via ${mcpUrl} as ${devUid}]\n`,
+    );
+    return id;
+  } finally {
+    await client.disconnect().catch(() => {
+      // ignore — we're exiting either way if the REPL throws below.
+    });
   }
 }
 
@@ -131,6 +288,7 @@ export function runRepl(
   let inFlight = false;
   let midText = false;
   let exitCode = 0;
+  let seenConnect = false;
   let pendingDecision: DecisionState | null = null;
   let decisionTimer: NodeJS.Timeout | null = null;
 
@@ -192,10 +350,16 @@ export function runRepl(
   transport.on((ev: TransportEvent) => {
     switch (ev.type) {
       case 'connected':
+        seenConnect = true;
         // Print the sessionId on its own line first so the user can copy
         // it for a later `--session <id>` invocation. Stays on stderr so
         // piping the REPL's stdout still yields clean chat content.
         writeErr(`[session ${config.sessionId}]\n`);
+        if (config.tokenIsDefault) {
+          writeErr(
+            `[GEAS_AGENT_TOKEN unset — using default "${DEFAULT_AGENT_TOKEN}" (dev-only)]\n`,
+          );
+        }
         writeErr(
           `[connected to ${config.baseUrl} as ${config.characterId}` +
             (ev.resumeCursor ? ` resume=${ev.resumeCursor}` : '') +
@@ -208,6 +372,12 @@ export function runRepl(
         return;
       case 'disconnected':
         writeErr(`[disconnected: ${ev.reason}]\n`);
+        // If we never made it past the initial connect, surface the env-var
+        // hint — the most common cause is the agent server not running or
+        // the GEAS_AGENT_URL / GEAS_AGENT_PORT pair mismatched.
+        if (!seenConnect) {
+          writeErr(UNREACHABLE_SERVER_HELP);
+        }
         exitCode = 1;
         cleanup();
         return;
@@ -352,6 +522,30 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   if (parsed.mode === 'list') {
     runList(process.env, io).then((code) => process.exit(code));
+  } else if (parsed.mode === 'new-character') {
+    (async () => {
+      const name = parsed.name ?? DEFAULT_NEW_CHARACTER_NAME;
+      const id = await mintCharacter(process.env, io, name);
+      if (!id) {
+        process.exit(2);
+      }
+      try {
+        // `mintCharacter` already verified MCP reachability; now boot the
+        // REPL against the freshly-minted character. Inject the id into the
+        // env so `readConfigFromEnv` picks it up like any other run.
+        const env = { ...process.env, GEAS_AGENT_CHARACTER: id };
+        const base = readConfigFromEnv(env);
+        const handles = runRepl(base, io);
+        process.on('SIGINT', () => {
+          process.stderr.write('\n[SIGINT — closing]\n');
+          handles.close();
+        });
+        handles.done.then((code) => process.exit(code));
+      } catch (e) {
+        process.stderr.write(`repl: ${(e as Error).message}\n`);
+        process.exit(2);
+      }
+    })();
   } else {
     try {
       const base = readConfigFromEnv(process.env);
