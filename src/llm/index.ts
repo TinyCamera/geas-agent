@@ -41,6 +41,14 @@ export {
 } from './anthropic.js';
 
 export {
+  GeminiProvider,
+  type GeminiProviderOptions,
+  type GeminiLike,
+  DEFAULT_GEMINI_MODEL,
+  cleanSchema,
+} from './gemini.js';
+
+export {
   buildCachedRequest,
   countCacheBreakpoints,
   MAX_CACHE_BREAKPOINTS,
