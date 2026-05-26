@@ -20,8 +20,13 @@
  * |---------------------------|-------------------------------|------------------------------------------|
  * | `ANTHROPIC_API_KEY`       | (required)                    | LLM provider auth                        |
  * | `GEAS_MCP_URL`            | `http://localhost:8088/mcp`   | MCP endpoint                             |
- * | `GEAS_DEV_UID`            | `agent-dev`                   | Static dev verifier UID                  |
- * | `GEAS_AGENT_PORT`         | `3001`                        | Channel-A listen port                    |
+ * | `GEAS_DEV_UID`            | `nick-dev`                    | Static dev verifier UID — matches the    |
+ * |                           |                               | geas-server local stack default so       |
+ * |                           |                               | characters created there are visible to  |
+ * |                           |                               | the agent without any extra env wiring.  |
+ * | `GEAS_AGENT_PORT`         | `8090`                        | Channel-A listen port — aligned with the |
+ * |                           |                               | REPL's `GEAS_AGENT_URL` default so the   |
+ * |                           |                               | client talks to something out of the box.|
  * | `FIRESTORE_EMULATOR_HOST` | (unset → in-memory store)     | Switches conversation store to Firestore |
  * | `GEAS_BEARER_TOKEN`       | (unset → relies on dev unauth) | MCP bearer token for prod                |
  *
@@ -112,7 +117,7 @@ export function readBootConfigFromEnv(
 ): ServerBootConfig {
   const port = env.GEAS_AGENT_PORT
     ? Number.parseInt(env.GEAS_AGENT_PORT, 10)
-    : 3001;
+    : 8090;
   if (!Number.isFinite(port) || port <= 0) {
     throw new Error(
       `GEAS_AGENT_PORT must be a positive integer, got ${env.GEAS_AGENT_PORT}`,
@@ -120,7 +125,7 @@ export function readBootConfigFromEnv(
   }
   return {
     mcpUrl: env.GEAS_MCP_URL ?? 'http://localhost:8088/mcp',
-    devUid: env.GEAS_DEV_UID ?? 'agent-dev',
+    devUid: env.GEAS_DEV_UID ?? 'nick-dev',
     port,
     anthropicApiKey: env.ANTHROPIC_API_KEY ?? null,
     bearerToken: env.GEAS_BEARER_TOKEN,

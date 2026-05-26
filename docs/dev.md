@@ -129,6 +129,49 @@ throw with "no goblin in fog-of-war range, and set_position is not
 available", the server isn't running with `GEAS_DEV_UNAUTH=1` — restart
 step 2 with both bypass vars set.
 
+## 3a. Try the REPL
+
+The REPL is the interactive face of the agent (#648). After step 2 you should
+be able to hold an LLM-driven turn-by-turn conversation against the local
+stack with just two more terminals and **no extra env vars** beyond
+`ANTHROPIC_API_KEY`.
+
+```bash
+# Terminal 2: agent server (Channel A)
+cd ~/work/geas/geas-agent
+export ANTHROPIC_API_KEY=sk-...   # the only required env var
+npm run dev:server                # binds :8090, reads agent-side defaults
+```
+
+```bash
+# Terminal 3: REPL client
+cd ~/work/geas/geas-agent
+npm run repl -- --new-character   # mints a fresh L1 character and uses it
+```
+
+What "no extra env vars" means is that every paper-cut from #735 now has a
+sensible default:
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `GEAS_AGENT_PORT` (server) | `8090` | Aligned with the REPL's `GEAS_AGENT_URL` default. |
+| `GEAS_AGENT_URL` (REPL) | `http://127.0.0.1:8090` | |
+| `GEAS_AGENT_TOKEN` (REPL) | `dev-token` | Matches `StaticDevVerifier`. The REPL prints a `[GEAS_AGENT_TOKEN unset — using default …]` warning so dev-mode is visible. **Set this for production.** |
+| `GEAS_DEV_UID` (both) | `nick-dev` | Matches the geas-server local stack default — characters created in either repo are visible to the other without extra wiring. |
+| `GEAS_AGENT_CHARACTER` (REPL) | — | No default; use `--new-character` to mint one, or `--list` to see existing sessions. |
+
+`--new-character` calls `mcp__geas__create_character` via the geas-server MCP
+endpoint (`GEAS_MCP_URL`, default `http://localhost:8088/mcp`), prints the
+new id on a recognisable line (`GEAS_AGENT_CHARACTER=<id>`), and then opens a
+chat session against it. The REPL flag accepts an optional name:
+`npm run repl -- --new-character Alice`.
+
+If the REPL prints `repl: could not reach the geas-agent server.` the most
+common causes are:
+  - You forgot to start `npm run dev:server` in a second terminal.
+  - You overrode `GEAS_AGENT_PORT` server-side without also setting
+    `GEAS_AGENT_URL` REPL-side (or vice-versa). Pick a port and align both.
+
 ## 4. Troubleshooting
 
 - **`ERR_MODULE_NOT_FOUND` (`@modelcontextprotocol/sdk` or similar)** —

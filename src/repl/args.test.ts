@@ -53,4 +53,30 @@ describe('parseArgs', () => {
   it('unknown flags are an error', () => {
     expect(parseArgs(['--nope']).mode).toBe('error');
   });
+
+  it('--new-character with no name maps to mode=new-character (no name)', () => {
+    expect(parseArgs(['--new-character'])).toEqual({ mode: 'new-character' });
+  });
+
+  it('--new-character with a name attaches it', () => {
+    expect(parseArgs(['--new-character', 'Alice'])).toEqual({
+      mode: 'new-character',
+      name: 'Alice',
+    });
+  });
+
+  it('--new-character followed by a flag treats the flag as a separate arg', () => {
+    // Bare `--new-character --list` is mutually-exclusive, not a name=`--list`.
+    const got = parseArgs(['--new-character', '--list']);
+    expect(got.mode).toBe('error');
+    expect(got.mode === 'error' && got.message).toMatch(/mutually exclusive/i);
+  });
+
+  it('--new-character + --new is mutually-exclusive', () => {
+    expect(parseArgs(['--new-character', '--new']).mode).toBe('error');
+  });
+
+  it('--new-character + --session is mutually-exclusive', () => {
+    expect(parseArgs(['--new-character', '--session', 'x']).mode).toBe('error');
+  });
 });
