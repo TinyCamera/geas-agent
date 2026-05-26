@@ -204,6 +204,30 @@ common causes are:
   Check that `geas-server/packages/shared/src/chunks.ts` `REGION_SPAWN_CONFIGS.WILDS`
   still includes `'goblin'` in `enemyTypes` and `enemiesPerChunk` is > 0.
 
+## 4a. Test clients: use `POST /chat/sync`
+
+The `POST /chat` + `WS /events` pair is the *human* surface — streaming
+text deltas, dim tool-call rendering, decision pushes. Test clients that
+only care about the final outcome of one turn should use the
+synchronous variant instead:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3001/chat/sync \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"smoke","characterId":"<id>","message":"look around"}' \
+  | jq
+```
+
+The response is a single `TurnResult` JSON body — assembled assistant
+text, tool calls + results, narration blocks, decisions, and the final
+telemetry frame. `stopReason` is `'end_turn' | 'aborted' | 'error' |
+'timeout'`. Concurrent calls for the same `(uid, characterId)` get 409
+`turn_in_progress`; clients retry. The wait budget is
+`SYNC_CHAT_TIMEOUT_MS` (default 120s) — on overrun the response is 504
+with a `partialTurn` carrying whatever had streamed before the cutoff.
+Streaming `/chat` semantics are unchanged.
+
 ## 5. Acceptance (geas-server#583)
 
 This runbook passes if a clean checkout (no prior knowledge) can follow

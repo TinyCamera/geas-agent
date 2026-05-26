@@ -271,6 +271,15 @@ export class IdleSession {
     };
   }
 
+  /**
+   * True iff a turn is currently being driven (between the user message
+   * and the runner's terminal `done`/`error`). Used by `POST /chat/sync`
+   * (#736) to reject concurrent sync POSTs with 409 instead of queueing.
+   */
+  isTurnActive(): boolean {
+    return this.#activeTurn !== null;
+  }
+
   /** Force a verdict read — useful for tests + telemetry exporters. */
   idleVerdict(): IdleVerdict {
     return isIdle({

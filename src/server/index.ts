@@ -22,7 +22,18 @@ export {
   type ResolveDecisionRequest,
   type SessionListingRow,
   type ListSessionsResponse,
+  type SyncChatResponse,
+  type SyncChatTimeoutResponse,
 } from './wire.js';
+
+export {
+  assembleTurn,
+  type TurnResult,
+  type TurnStopReason,
+  type TurnResultToolCall,
+  type TurnResultToolResult,
+  type TurnResultDecision,
+} from './assemble-turn.js';
 
 export {
   type TokenVerifier,

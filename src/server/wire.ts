@@ -152,6 +152,31 @@ export interface ApiError {
 }
 
 /**
+ * POST /chat/sync response body (issue #736). Synchronous test-client
+ * surface — the assembled outcome of one turn. The full `TurnResult`
+ * type lives in `./assemble-turn.ts` so the assembler can be unit-tested
+ * without dragging in HTTP plumbing.
+ *
+ * On timeout the response is 504 with this same envelope plus
+ * `partialTurn` carrying whatever was assembled before the wait window
+ * elapsed.
+ */
+export interface SyncChatResponse {
+  readonly protocolVersion: typeof PROTOCOL_VERSION;
+  readonly sessionId: string;
+  readonly characterId: string;
+  readonly ts: number;
+  readonly turn: import('./assemble-turn.js').TurnResult;
+}
+
+export interface SyncChatTimeoutResponse {
+  readonly protocolVersion: typeof PROTOCOL_VERSION;
+  readonly error: 'timeout';
+  readonly message: string;
+  readonly partialTurn: import('./assemble-turn.js').TurnResult;
+}
+
+/**
  * Resolve-decision body (Channel B from the user side — the user picks an
  * option in response to a `decision` event the server pushed).
  */

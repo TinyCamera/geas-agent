@@ -96,6 +96,12 @@ export interface ServerBootConfig {
   readonly bearerToken?: string;
   readonly useFirestore: boolean;
   /**
+   * Wait budget for `POST /chat/sync` (#736). Default 120_000 ms. Lifted
+   * from `SYNC_CHAT_TIMEOUT_MS` in `process.env`. Tests can pin a tight
+   * value via the bootstrap config to exercise 504s.
+   */
+  readonly syncChatTimeoutMs?: number;
+  /**
    * Force the LLM provider regardless of `anthropicApiKey`. Tests pass a
    * `NoopProvider` here so the entrypoint boots without an Anthropic key.
    * Production callers (the `main()` path below) never set this — the key
@@ -123,6 +129,16 @@ export function readBootConfigFromEnv(
       `GEAS_AGENT_PORT must be a positive integer, got ${env.GEAS_AGENT_PORT}`,
     );
   }
+  let syncChatTimeoutMs: number | undefined;
+  if (env.SYNC_CHAT_TIMEOUT_MS) {
+    const n = Number.parseInt(env.SYNC_CHAT_TIMEOUT_MS, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(
+        `SYNC_CHAT_TIMEOUT_MS must be a positive integer, got ${env.SYNC_CHAT_TIMEOUT_MS}`,
+      );
+    }
+    syncChatTimeoutMs = n;
+  }
   return {
     mcpUrl: env.GEAS_MCP_URL ?? 'http://localhost:8088/mcp',
     devUid: env.GEAS_DEV_UID ?? 'nick-dev',
@@ -130,6 +146,7 @@ export function readBootConfigFromEnv(
     anthropicApiKey: env.ANTHROPIC_API_KEY ?? null,
     bearerToken: env.GEAS_BEARER_TOKEN,
     useFirestore: !!env.FIRESTORE_EMULATOR_HOST,
+    ...(syncChatTimeoutMs !== undefined ? { syncChatTimeoutMs } : {}),
   };
 }
 
@@ -323,7 +340,15 @@ export async function bootServer(cfg: ServerBootConfig): Promise<BootedServer> {
   });
 
   // ---- Wire up the HTTP/WS server ----
-  const server = createServer({ verifier, registry, hub, store });
+  const server = createServer({
+    verifier,
+    registry,
+    hub,
+    store,
+    ...(cfg.syncChatTimeoutMs !== undefined
+      ? { syncChatTimeoutMs: cfg.syncChatTimeoutMs }
+      : {}),
+  });
   const boundPort = await server.listen(cfg.port);
 
   return {

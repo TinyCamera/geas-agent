@@ -32,11 +32,15 @@ import type { ConversationStore } from '../persistence/conversation-store.js';
 import {
   PROTOCOL_VERSION,
   type ApiError,
+  type ChannelAEvent,
   type ChatAccepted,
   type ChatRequest,
   type ListSessionsResponse,
   type ResolveDecisionRequest,
+  type SyncChatResponse,
+  type SyncChatTimeoutResponse,
 } from './wire.js';
+import { assembleTurn } from './assemble-turn.js';
 
 export interface ServerOptions {
   readonly verifier: TokenVerifier;
@@ -52,6 +56,13 @@ export interface ServerOptions {
   readonly now?: () => number;
   /** Ping interval ms (default 30s, 0 disables). */
   readonly pingIntervalMs?: number;
+  /**
+   * Wait budget for `POST /chat/sync` (issue #736). Default 120_000 ms,
+   * matching the `SYNC_CHAT_TIMEOUT_MS` env contract documented in the
+   * ticket. Tests pass a tight value (e.g. 50ms) to exercise the
+   * timeout branch deterministically.
+   */
+  readonly syncChatTimeoutMs?: number;
 }
 
 export interface RunningServer {
@@ -106,6 +117,8 @@ function isResolveDecisionRequest(body: unknown): body is ResolveDecisionRequest
 export function createServer(opts: ServerOptions): RunningServer {
   const now = opts.now ?? (() => Date.now());
   const pingIntervalMs = opts.pingIntervalMs ?? 30_000;
+  const syncChatTimeoutMs = opts.syncChatTimeoutMs ?? 120_000;
+  let nextSyncSubId = 1;
 
   const app = express();
   app.use(express.json({ limit: '64kb' }));
@@ -212,6 +225,150 @@ export function createServer(opts: ServerOptions): RunningServer {
       ts: now(),
     };
     res.status(202).json(body);
+  });
+
+  app.post('/chat/sync', async (req, res) => {
+    // Synchronous variant of POST /chat (issue #736). Subscribes a
+    // throwaway listener to the hub stream for (uid, characterId),
+    // invokes `deliverUserMessage`, awaits the turn (with timeout),
+    // assembles the captured events into a `TurnResult`, returns it.
+    //
+    // Streaming /chat stays untouched — this is purely additive.
+    const token = bearer(req);
+    if (!token) {
+      send(res, 401, apiError('unauthorized', 'missing bearer token'));
+      return;
+    }
+    let uid: string;
+    try {
+      ({ uid } = await opts.verifier.verify(token));
+    } catch (e) {
+      send(res, 401, apiError('unauthorized', (e as Error).message));
+      return;
+    }
+    if (!isChatRequest(req.body)) {
+      send(
+        res,
+        400,
+        apiError('bad_request', 'expected {sessionId, characterId, message}'),
+      );
+      return;
+    }
+    const { sessionId, characterId, message } = req.body;
+    if (!message.trim()) {
+      send(res, 400, apiError('bad_request', 'message must be non-empty'));
+      return;
+    }
+
+    // Concurrency gate: if a turn is already running on this session's
+    // (uid, characterId), 409 — don't queue. Clients retry.
+    //
+    // We key the gate on (uid, characterId) because that's where the
+    // turn actually serializes inside `IdleSession`. `sessionId` is
+    // opaque to the hub/registry (see session-registry.ts) and a single
+    // user could legitimately re-use it across tabs.
+    const existing = opts.registry.peek(uid, characterId);
+    if (existing && existing.isTurnActive()) {
+      res.status(409).json(
+        apiError(
+          'turn_in_progress',
+          'another turn for this character is already running',
+        ),
+      );
+      return;
+    }
+
+    const session = opts.registry.get(uid, characterId);
+
+    // Subscribe a throwaway listener to capture every event the runner
+    // emits during the turn. We start from the current `lastEventId`
+    // so we don't replay history into this assembly.
+    const startCursor = opts.hub.lastEventId(uid, characterId);
+    const captured: ChannelAEvent[] = [];
+    const subId = `sync-${nextSyncSubId++}`;
+    let donePromiseResolve: (() => void) | null = null;
+    const donePromise = new Promise<void>((resolve) => {
+      donePromiseResolve = resolve;
+    });
+    opts.hub.subscribe(
+      uid,
+      characterId,
+      {
+        id: subId,
+        send: (event) => {
+          // Skip transport noise (hello/ping) — assembler filters too,
+          // but keep the captured window tight.
+          if (event.type === 'hello' || event.type === 'ping') return;
+          captured.push(event);
+          if (event.type === 'done' && donePromiseResolve) {
+            donePromiseResolve();
+            donePromiseResolve = null;
+          }
+        },
+      },
+      startCursor, // resume cursor — no replay; only new events
+    );
+
+    let timedOut = false;
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, syncChatTimeoutMs);
+    });
+
+    try {
+      // Kick the turn. `deliverUserMessage` resolves when the turn lands
+      // in a terminal state, but we additionally race against an
+      // explicit `done` event for cleaner cancellation semantics on
+      // error paths.
+      const turnPromise = session
+        .deliverUserMessage(message, { sessionId })
+        .catch((err: unknown) => {
+          // Already surfaced as an `error` event on the stream — swallow
+          // here so we still produce a structured response.
+          captured.push({
+            protocolVersion: PROTOCOL_VERSION,
+            eventId: opts.hub.lastEventId(uid, characterId),
+            ts: now(),
+            uid,
+            characterId,
+            type: 'error',
+            message: (err as Error).message ?? 'turn threw',
+          });
+        });
+
+      await Promise.race([
+        Promise.all([turnPromise, donePromise]),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      opts.hub.unsubscribe(uid, characterId, subId);
+    }
+
+    const turn = assembleTurn(message, captured, { timedOut });
+
+    if (timedOut) {
+      const body: SyncChatTimeoutResponse = {
+        protocolVersion: PROTOCOL_VERSION,
+        error: 'timeout',
+        message: `turn did not complete within ${syncChatTimeoutMs}ms`,
+        partialTurn: turn,
+      };
+      res.status(504).json(body);
+      return;
+    }
+
+    const body: SyncChatResponse = {
+      protocolVersion: PROTOCOL_VERSION,
+      sessionId,
+      characterId,
+      ts: now(),
+      turn,
+    };
+    res.status(200).json(body);
   });
 
   app.post('/resolve-decision', async (req, res) => {
