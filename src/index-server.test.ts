@@ -118,6 +118,8 @@ describe('readBootConfigFromEnv', () => {
     expect(cfg.devUid).toBe('nick-dev');
     expect(cfg.port).toBe(8090);
     expect(cfg.anthropicApiKey).toBeNull();
+    expect(cfg.geminiApiKey).toBeNull();
+    expect(cfg.llmProvider).toBe('anthropic');
     expect(cfg.useFirestore).toBe(false);
   });
 
@@ -127,6 +129,8 @@ describe('readBootConfigFromEnv', () => {
       GEAS_DEV_UID: 'alice',
       GEAS_AGENT_PORT: '4321',
       ANTHROPIC_API_KEY: 'sk-test',
+      GOOGLE_GEMINI_API_KEY: 'g-test',
+      GEAS_AGENT_LLM_PROVIDER: 'gemini',
       FIRESTORE_EMULATOR_HOST: 'localhost:8080',
       GEAS_BEARER_TOKEN: 'tok',
     });
@@ -134,6 +138,8 @@ describe('readBootConfigFromEnv', () => {
     expect(cfg.devUid).toBe('alice');
     expect(cfg.port).toBe(4321);
     expect(cfg.anthropicApiKey).toBe('sk-test');
+    expect(cfg.geminiApiKey).toBe('g-test');
+    expect(cfg.llmProvider).toBe('gemini');
     expect(cfg.bearerToken).toBe('tok');
     expect(cfg.useFirestore).toBe(true);
   });
@@ -141,6 +147,17 @@ describe('readBootConfigFromEnv', () => {
   it('throws on a non-positive port', () => {
     expect(() => readBootConfigFromEnv({ GEAS_AGENT_PORT: '0' })).toThrow();
     expect(() => readBootConfigFromEnv({ GEAS_AGENT_PORT: 'abc' })).toThrow();
+  });
+
+  it('throws on an unknown LLM provider name (#734)', () => {
+    expect(() =>
+      readBootConfigFromEnv({ GEAS_AGENT_LLM_PROVIDER: 'openai' }),
+    ).toThrow(/GEAS_AGENT_LLM_PROVIDER/);
+  });
+
+  it('accepts GEAS_AGENT_LLM_PROVIDER=gemini case-insensitively (#734)', () => {
+    const cfg = readBootConfigFromEnv({ GEAS_AGENT_LLM_PROVIDER: 'Gemini' });
+    expect(cfg.llmProvider).toBe('gemini');
   });
 });
 
@@ -201,6 +218,8 @@ describe('bootServer — end-to-end (NoopProvider + in-memory MCP)', () => {
       devUid: 'agent-dev',
       port: 0,
       anthropicApiKey: null,
+      geminiApiKey: null,
+      llmProvider: 'anthropic',
       useFirestore: false,
       llmOverride: new NoopProvider({ script: [] }),
       mcpOverride: mcpClient,
@@ -236,6 +255,8 @@ describe('bootServer — end-to-end (NoopProvider + in-memory MCP)', () => {
       devUid: 'agent-dev',
       port: 0,
       anthropicApiKey: null,
+      geminiApiKey: null,
+      llmProvider: 'anthropic',
       useFirestore: false,
       llmOverride: provider,
       mcpOverride: mcpClient,

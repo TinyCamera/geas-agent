@@ -64,6 +64,7 @@
 import process from 'node:process';
 
 import { AnthropicProvider } from './llm/anthropic.js';
+import { GeminiProvider } from './llm/gemini.js';
 import { type LlmProvider, type LlmToolDef } from './llm/provider.js';
 import { GeasMcpClient } from './mcp/index.js';
 import { type GeasToolResponse } from './mcp/tools.js';
@@ -87,12 +88,24 @@ import { SessionRegistry } from './server/session-registry.js';
 import { createServer, type RunningServer } from './server/server.js';
 import { wrapLlmWithTelemetry } from './server/telemetry-sink.js';
 
+/**
+ * Which LLM backend to boot. `anthropic` (default, Haiku 4.5) and `gemini`
+ * (Flash 2.5) are interchangeable through {@link LlmProvider}; selection is
+ * boot-time only (no per-conversation switching). Added #734 after Niall
+ * surfaced the gap going to try the REPL with no Anthropic key on the box.
+ */
+export type LlmProviderName = 'anthropic' | 'gemini';
+
 /** Resolved server-boot config (testable seam — separate from `process.env`). */
 export interface ServerBootConfig {
   readonly mcpUrl: string;
   readonly devUid: string;
   readonly port: number;
   readonly anthropicApiKey: string | null;
+  /** Gemini API key — only consulted when `llmProvider === 'gemini'`. */
+  readonly geminiApiKey: string | null;
+  /** Which LLM provider to boot. Defaults to `anthropic`. */
+  readonly llmProvider: LlmProviderName;
   readonly bearerToken?: string;
   readonly useFirestore: boolean;
   /**
@@ -139,11 +152,21 @@ export function readBootConfigFromEnv(
     }
     syncChatTimeoutMs = n;
   }
+  const rawProvider = (env.GEAS_AGENT_LLM_PROVIDER ?? 'anthropic')
+    .trim()
+    .toLowerCase();
+  if (rawProvider !== 'anthropic' && rawProvider !== 'gemini') {
+    throw new Error(
+      `GEAS_AGENT_LLM_PROVIDER must be 'anthropic' or 'gemini', got '${env.GEAS_AGENT_LLM_PROVIDER}'`,
+    );
+  }
   return {
     mcpUrl: env.GEAS_MCP_URL ?? 'http://localhost:8088/mcp',
     devUid: env.GEAS_DEV_UID ?? 'nick-dev',
     port,
     anthropicApiKey: env.ANTHROPIC_API_KEY ?? null,
+    geminiApiKey: env.GOOGLE_GEMINI_API_KEY ?? null,
+    llmProvider: rawProvider as LlmProviderName,
     bearerToken: env.GEAS_BEARER_TOKEN,
     useFirestore: !!env.FIRESTORE_EMULATOR_HOST,
     ...(syncChatTimeoutMs !== undefined ? { syncChatTimeoutMs } : {}),
@@ -171,6 +194,30 @@ function buildDispatcher(
  * "production-grade recovery". Filed as a follow-up.
  */
 const NEVER_RECOVER: RecoveryDriver = async () => null;
+
+/**
+ * Build the concrete {@link LlmProvider} per `cfg.llmProvider`. Fails fast
+ * on a missing key — reaching either branch with a `null` key is a caller
+ * bug, since `main()` validates the keys before calling `bootServer`. Tests
+ * skip this entirely by passing `llmOverride`.
+ */
+function buildProvider(cfg: ServerBootConfig): LlmProvider {
+  if (cfg.llmProvider === 'gemini') {
+    if (!cfg.geminiApiKey) {
+      throw new Error(
+        "bootServer: GEAS_AGENT_LLM_PROVIDER='gemini' requires GOOGLE_GEMINI_API_KEY (or pass llmOverride)",
+      );
+    }
+    return new GeminiProvider({ apiKey: cfg.geminiApiKey });
+  }
+  // anthropic (default)
+  if (!cfg.anthropicApiKey) {
+    throw new Error(
+      'bootServer: ANTHROPIC_API_KEY missing and no llmOverride supplied',
+    );
+  }
+  return new AnthropicProvider({ apiKey: cfg.anthropicApiKey });
+}
 
 /** Convert MCP tool surface → LLM tool defs (the model's tool palette). */
 function toLlmToolDefs(
@@ -243,18 +290,7 @@ export async function bootServer(cfg: ServerBootConfig): Promise<BootedServer> {
   // The wrap is what carries the per-character `${uid}:${characterId}` tag,
   // so a single underlying AnthropicProvider is safe to share.
   const baseProvider: LlmProvider =
-    cfg.llmOverride ??
-    (() => {
-      if (!cfg.anthropicApiKey) {
-        // bootServer is the seam tests drive — they pass `llmOverride`
-        // and skip this branch. Production goes through `main()` which
-        // fails-fast earlier. Reaching this is a caller bug.
-        throw new Error(
-          'bootServer: ANTHROPIC_API_KEY missing and no llmOverride supplied',
-        );
-      }
-      return new AnthropicProvider({ apiKey: cfg.anthropicApiKey });
-    })();
+    cfg.llmOverride ?? buildProvider(cfg);
 
   // ---- Server-side primitives ----
   const hub = new EventHub();
@@ -398,16 +434,31 @@ async function resumeLatestSession(input: {
 /** Process entrypoint. */
 export async function main(): Promise<void> {
   const cfg = readBootConfigFromEnv();
-  if (!cfg.anthropicApiKey) {
+  if (cfg.llmProvider === 'anthropic' && !cfg.anthropicApiKey) {
     process.stderr.write(
       '[geas-agent] ANTHROPIC_API_KEY is required. ' +
-        'Set it in your shell (export ANTHROPIC_API_KEY=sk-...) and retry.\n',
+        'Set it in your shell (export ANTHROPIC_API_KEY=sk-...) and retry, ' +
+        "or switch backends with GEAS_AGENT_LLM_PROVIDER=gemini + GOOGLE_GEMINI_API_KEY.\n",
+    );
+    process.exit(2);
+  }
+  if (cfg.llmProvider === 'gemini' && !cfg.geminiApiKey) {
+    process.stderr.write(
+      '[geas-agent] GOOGLE_GEMINI_API_KEY is required when ' +
+        "GEAS_AGENT_LLM_PROVIDER='gemini'. Set it in your shell " +
+        '(export GOOGLE_GEMINI_API_KEY=...) and retry.\n',
     );
     process.exit(2);
   }
   const booted = await bootServer(cfg);
+  // The `model=` tag lets the REPL user see at a glance which backend
+  // they're talking to — important during the #585 provider-shake-out.
+  const modelLabel =
+    cfg.llmProvider === 'gemini' ? 'gemini-2.5-flash' : 'claude-haiku-4-5';
   console.log(
-    `[geas-agent] READY mcp=${cfg.mcpUrl} uid=${cfg.devUid} port=${booted.port} store=${cfg.useFirestore ? 'firestore' : 'memory'}`,
+    `[geas-agent] READY mcp=${cfg.mcpUrl} uid=${cfg.devUid} port=${booted.port} ` +
+      `provider=${cfg.llmProvider} model=${modelLabel} ` +
+      `store=${cfg.useFirestore ? 'firestore' : 'memory'}`,
   );
   const shutdown = async (sig: string) => {
     console.log(`[geas-agent] received ${sig}, shutting down`);

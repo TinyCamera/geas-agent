@@ -83,3 +83,27 @@ assertion / telemetry counter at the call site.
   ```bash
   ANTHROPIC_API_KEY=sk-ant-... npx vitest run --config vitest.integration.config.ts
   ```
+
+## Gemini caching (#734)
+
+The second `LlmProvider` impl, `GeminiProvider`, has **no per-request
+cache-breakpoint API**. Gemini Flash 2.5 caches implicitly — the
+[#585 spike](https://github.com/tinycamera/geas-server/issues/585) observed
+~78% hit rate on stable prefixes with no configuration on our side.
+
+What this means for the cache-layout helper:
+
+- `buildCachedRequest(...)` is a **no-op for Gemini in the cache-marker
+  sense** — the `cache_control` markers it places on the system prompt, the
+  last tool def, and the stable game-state prefix ride along on the request
+  type but the Gemini adapter silently drops them. They don't error; they
+  also don't change cache behavior. Keep using the helper anyway: the prefix
+  *ordering* it enforces (tools → stable system → stable game-state →
+  volatile turn content) is exactly the ordering Gemini's implicit cache
+  needs to maximise hit rate.
+- Cache hits surface as `LlmUsage.cacheReadInputTokens` from Gemini's
+  `cachedContentTokenCount`, with `inputTokens` reported as the uncached
+  remainder (so `pricing.ts` doesn't double-count against the
+  `gemini-2.5-flash` row).
+- `cacheCreationInputTokens` is **always 0** for Gemini — implicit caching is
+  free to write. The cost model handles that correctly.
