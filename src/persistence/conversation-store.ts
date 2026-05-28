@@ -163,6 +163,25 @@ export interface ConversationStore {
   ): Promise<readonly PersistedTurn[]>;
 
   /**
+   * Paginated older-turn fetch backing `GET /history` (#775). Returns up
+   * to `limit` turns with `turnIndex < before`, ordered **ascending** by
+   * `turnIndex` (so the caller can append them to an existing buffer
+   * without re-sorting). Pass `before = Number.POSITIVE_INFINITY`
+   * (or `Number.MAX_SAFE_INTEGER`) to fetch the most recent page.
+   *
+   * Implementations push the `desc + limit` query into the storage layer
+   * where it's already indexed (`orderBy('turnIndex', 'desc').limit(n)`)
+   * rather than filtering `getAllTurns` in memory.
+   *
+   * Returns `[]` if no older turns exist.
+   */
+  getOlderTurns(
+    key: ConversationKey,
+    before: number,
+    limit: number,
+  ): Promise<readonly PersistedTurn[]>;
+
+  /**
    * Sessions belonging to one UID, rolled up from the per-turn docs.
    * Ordered most-recently-active first (so the `--list` table reads
    * naturally without the caller sorting). Returns `[]` if the UID has
@@ -361,6 +380,23 @@ export class InMemoryConversationStore implements ConversationStore {
   ): Promise<readonly PersistedTurn[]> {
     const all = await this.getAllTurns(key);
     return all.filter((t) => t.sessionId === sessionId);
+  }
+
+  async getOlderTurns(
+    key: ConversationKey,
+    before: number,
+    limit: number,
+  ): Promise<readonly PersistedTurn[]> {
+    if (limit <= 0) return [];
+    const bucket = this.#docs.get(`${key.uid}::${key.characterId}`);
+    if (!bucket) return [];
+    const matching = [...bucket.entries()]
+      .filter(([idx]) => idx < before)
+      .sort(([a], [b]) => a - b);
+    // Take the *most recent* page below `before` — i.e. the tail of the
+    // ascending-sorted list — then return ascending.
+    const slice = matching.slice(-limit);
+    return slice.map(([, raw]) => deserializeTurn(raw));
   }
 
   async listSessions(uid: string): Promise<readonly SessionSummary[]> {

@@ -343,6 +343,7 @@ describe('LoopRunner — end-to-end', () => {
         getRecentTurns: async () => [],
         getAllTurns: async () => [],
         getSessionTurns: async () => [],
+        getOlderTurns: async () => [],
         listSessions: async () => [],
       };
       const llm = new NoopProvider({

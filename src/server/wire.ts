@@ -387,3 +387,70 @@ export interface ListSessionsResponse {
   readonly sessions: readonly SessionListingRow[];
   readonly ts: number;
 }
+
+// ---------- History pagination (#775) ----------
+//
+// `GET /history?characterId=X&before=<turnIndex>&limit=N`
+//
+// Paginated read of `PersistedTurn`s for one `(uid, characterId)`. Mirror
+// of `HistoryResponse` in `geas-client/src/transport/wire.ts` — keep both
+// in lockstep. `before` is exclusive (only turns with `turnIndex <
+// before` are returned); omit to fetch the most recent page. `limit`
+// defaults to `HISTORY_DEFAULT_LIMIT`, capped at `HISTORY_MAX_LIMIT`.
+//
+// Response `turns` is ordered ascending by `turnIndex`. `hasMore` is
+// true iff older turns exist beyond the page (i.e. there's a turn with
+// `turnIndex < min(returned)`).
+
+export const HISTORY_DEFAULT_LIMIT = 20 as const;
+export const HISTORY_MAX_LIMIT = 100 as const;
+
+/**
+ * One historical turn on the wire. Structurally identical to
+ * `PersistedTurn` in `../persistence/conversation-store.ts`; redeclared
+ * here so `wire.ts` stays the single source of truth for the HTTP shape
+ * and doesn't drag the persistence types into client-side consumers.
+ */
+export interface HistoryTurnToolCall {
+  readonly tool: string;
+  readonly args: unknown;
+  readonly status: string;
+  readonly attempts: number;
+}
+
+export interface HistoryTurnLlmRound {
+  readonly intent: string | null;
+  readonly toolCalls: readonly HistoryTurnToolCall[];
+  readonly narration: string;
+}
+
+export interface HistoryTurnTokenUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadInputTokens: number;
+  readonly cacheCreationInputTokens: number;
+}
+
+export interface HistoryTurn {
+  readonly turnIndex: number;
+  readonly sessionId: string;
+  readonly characterId: string;
+  readonly displayName: string;
+  readonly timestamp: string;
+  readonly userMessage: string;
+  readonly llmTurns: readonly HistoryTurnLlmRound[];
+  readonly tokenUsage: HistoryTurnTokenUsage;
+  readonly totalCostUsd: number;
+  readonly error?: string;
+}
+
+export interface HistoryResponse {
+  readonly protocolVersion: typeof PROTOCOL_VERSION;
+  readonly uid: string;
+  readonly characterId: string;
+  /** Ascending by `turnIndex`. */
+  readonly turns: readonly HistoryTurn[];
+  /** True iff older turns exist beyond this page. */
+  readonly hasMore: boolean;
+  readonly ts: number;
+}
