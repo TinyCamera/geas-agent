@@ -106,6 +106,27 @@ export class FirestoreConversationStore implements ConversationStore {
     return turns;
   }
 
+  async getOlderTurns(
+    key: ConversationKey,
+    before: number,
+    limit: number,
+  ): Promise<readonly PersistedTurn[]> {
+    if (limit <= 0) return [];
+    // Push the desc + limit into Firestore (already indexed on
+    // `turnIndex`) and reverse to ascending for the caller. `before` is
+    // exclusive so use `<`, not `<=`.
+    const snap = await this.#turnsCollection(key)
+      .where('turnIndex', '<', before)
+      .orderBy('turnIndex', 'desc')
+      .limit(limit)
+      .get();
+    const turns: PersistedTurn[] = [];
+    snap.forEach((doc) => {
+      turns.push(deserializeTurn(doc.data() as DocumentData));
+    });
+    return turns.reverse();
+  }
+
   async listSessions(uid: string): Promise<readonly SessionSummary[]> {
     // Enumerate the user's characters by listing the `characters`
     // subcollection under their doc, then pull every turn for each.

@@ -30,11 +30,15 @@ import type { EventHub, Subscriber } from './hub.js';
 import type { SessionRegistry } from './session-registry.js';
 import type { ConversationStore } from '../persistence/conversation-store.js';
 import {
+  HISTORY_DEFAULT_LIMIT,
+  HISTORY_MAX_LIMIT,
   PROTOCOL_VERSION,
   type ApiError,
   type ChannelAEvent,
   type ChatAccepted,
   type ChatRequest,
+  type HistoryResponse,
+  type HistoryTurn,
   type ListSessionsResponse,
   type ResolveDecisionRequest,
   type SyncChatResponse,
@@ -166,6 +170,119 @@ export function createServer(opts: ServerOptions): RunningServer {
       res
         .status(500)
         .json(apiError('internal', `listSessions failed: ${(e as Error).message}`));
+    }
+  });
+
+  app.get('/history', async (req, res) => {
+    // Paginated conversation history for one (uid, characterId) — issue #775.
+    // `before` is exclusive turnIndex; omit for the most recent page.
+    // `limit` defaults to HISTORY_DEFAULT_LIMIT, capped at HISTORY_MAX_LIMIT.
+    const token = bearer(req);
+    if (!token) {
+      res.status(401).json(apiError('unauthorized', 'missing bearer token'));
+      return;
+    }
+    let uid: string;
+    try {
+      ({ uid } = await opts.verifier.verify(token));
+    } catch (e) {
+      res.status(401).json(apiError('unauthorized', (e as Error).message));
+      return;
+    }
+    const characterId = typeof req.query.characterId === 'string'
+      ? req.query.characterId
+      : '';
+    if (!characterId) {
+      res
+        .status(400)
+        .json(apiError('bad_request', 'characterId query param is required'));
+      return;
+    }
+    // `before` is optional (omit to fetch the most recent page) but if
+    // supplied must parse as a non-negative integer. Reject garbage rather
+    // than silently treating it as "most recent" — clients that mean
+    // "most recent" should omit the param.
+    let before = Number.POSITIVE_INFINITY;
+    if (typeof req.query.before === 'string' && req.query.before !== '') {
+      const parsed = Number(req.query.before);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        res
+          .status(400)
+          .json(
+            apiError(
+              'bad_request',
+              "'before' must be a non-negative finite number",
+            ),
+          );
+        return;
+      }
+      before = parsed;
+    }
+    let limit = HISTORY_DEFAULT_LIMIT as number;
+    if (typeof req.query.limit === 'string' && req.query.limit !== '') {
+      const parsed = Number(req.query.limit);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        res
+          .status(400)
+          .json(
+            apiError('bad_request', "'limit' must be a positive number"),
+          );
+        return;
+      }
+      limit = Math.min(Math.floor(parsed), HISTORY_MAX_LIMIT);
+    }
+    if (!opts.store) {
+      res
+        .status(503)
+        .json(apiError('unavailable', 'history not configured'));
+      return;
+    }
+    try {
+      // Over-fetch by one so we can tell `hasMore` without a second query.
+      const overfetched = await opts.store.getOlderTurns(
+        { uid, characterId },
+        before,
+        limit + 1,
+      );
+      const hasMore = overfetched.length > limit;
+      // `getOlderTurns` returns ascending. `hasMore=true` means the
+      // *oldest* entry in `overfetched` is the extra one — drop it.
+      const turns = (hasMore ? overfetched.slice(1) : overfetched).map<HistoryTurn>(
+        (t) => ({
+          turnIndex: t.turnIndex,
+          sessionId: t.sessionId,
+          characterId: t.characterId,
+          displayName: t.displayName,
+          timestamp: t.timestamp,
+          userMessage: t.userMessage,
+          llmTurns: t.llmTurns.map((l) => ({
+            intent: l.intent,
+            toolCalls: l.toolCalls.map((c) => ({
+              tool: c.tool,
+              args: c.args,
+              status: c.status,
+              attempts: c.attempts,
+            })),
+            narration: l.narration,
+          })),
+          tokenUsage: { ...t.tokenUsage },
+          totalCostUsd: t.totalCostUsd,
+          ...(t.error !== undefined ? { error: t.error } : {}),
+        }),
+      );
+      const body: HistoryResponse = {
+        protocolVersion: PROTOCOL_VERSION,
+        uid,
+        characterId,
+        turns,
+        hasMore,
+        ts: now(),
+      };
+      res.status(200).json(body);
+    } catch (e) {
+      res
+        .status(500)
+        .json(apiError('internal', `getOlderTurns failed: ${(e as Error).message}`));
     }
   });
 

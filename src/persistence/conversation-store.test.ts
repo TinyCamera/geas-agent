@@ -172,6 +172,35 @@ describe('InMemoryConversationStore', () => {
     expect(await s.getRecentTurns(keyA, 0)).toEqual([]);
   });
 
+  it('getOlderTurns: returns most-recent page below the cursor (ascending)', async () => {
+    const s = new InMemoryConversationStore();
+    for (let i = 0; i < 10; i++) await s.appendTurn(keyA, makeTurn(i));
+    // before=7 limit=3 → indices 4,5,6 (the page immediately older than 7).
+    const page = await s.getOlderTurns(keyA, 7, 3);
+    expect(page.map((t) => t.turnIndex)).toEqual([4, 5, 6]);
+  });
+
+  it('getOlderTurns: Infinity before returns the most-recent page', async () => {
+    const s = new InMemoryConversationStore();
+    for (let i = 0; i < 5; i++) await s.appendTurn(keyA, makeTurn(i));
+    const page = await s.getOlderTurns(keyA, Number.POSITIVE_INFINITY, 3);
+    expect(page.map((t) => t.turnIndex)).toEqual([2, 3, 4]);
+  });
+
+  it('getOlderTurns: returns [] for unknown character or limit<=0', async () => {
+    const s = new InMemoryConversationStore();
+    await s.appendTurn(keyA, makeTurn(0));
+    expect(await s.getOlderTurns(keyB, 10, 5)).toEqual([]);
+    expect(await s.getOlderTurns(keyA, 10, 0)).toEqual([]);
+  });
+
+  it('getOlderTurns: before is exclusive', async () => {
+    const s = new InMemoryConversationStore();
+    for (let i = 0; i < 5; i++) await s.appendTurn(keyA, makeTurn(i));
+    const page = await s.getOlderTurns(keyA, 2, 10);
+    expect(page.map((t) => t.turnIndex)).toEqual([0, 1]);
+  });
+
   it('getAllTurns returns full history ascending', async () => {
     const s = new InMemoryConversationStore();
     // Insert out of order to confirm the store sorts.
