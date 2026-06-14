@@ -17,10 +17,16 @@
  *     default `anthropic`), the "end-to-end with a real LLM" acceptance leg.
  *     Requires the matching API key.
  *
+ * After the scenarios run, the suite checks each one's cost against the
+ * committed baseline (`verify/cost-baseline.json`, #675) and exits non-zero on
+ * a regression. `--rebase-baseline` instead rewrites the baseline from the
+ * run's costs (do this from a *live* run; a keyless run records $0 and warns).
+ *
  * Usage:
  *   npm run test:verify                 # all scenarios, fake+noop
  *   npm run test:verify -- smoke        # one scenario by name
  *   npm run test:verify -- --list       # list scenarios and exit
+ *   npm run verify:rebase-baseline      # rewrite the cost baseline from this run
  */
 
 import process from 'node:process';
@@ -30,6 +36,13 @@ import { AnthropicProvider } from '../llm/anthropic.js';
 import { GeminiProvider } from '../llm/gemini.js';
 import { NoopProvider } from '../llm/noop.js';
 import type { LlmProvider } from '../llm/provider.js';
+import {
+  DEFAULT_BASELINE_PATH,
+  baselineFromReports,
+  loadBaseline,
+  saveBaseline,
+} from './cost-baseline.js';
+import { checkCostRegression, formatCostRegression } from './cost-regression.js';
 import { createFakeWorld } from './fake-world.js';
 import { createLiveWorld } from './live-world.js';
 import { formatReport, formatRun } from './report.js';
@@ -40,17 +53,20 @@ import type { VerifyReport, VerifyScenario, VerifyWorld } from './types.js';
 interface CliOptions {
   readonly names: string[];
   readonly list: boolean;
+  readonly rebaseBaseline: boolean;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   const names: string[] = [];
   let list = false;
+  let rebaseBaseline = false;
   for (const a of argv) {
     if (a === '--list' || a === '-l') list = true;
+    else if (a === '--rebase-baseline') rebaseBaseline = true;
     else if (a.startsWith('-')) throw new Error(`unknown flag: ${a}`);
     else names.push(a);
   }
-  return { names, list };
+  return { names, list, rebaseBaseline };
 }
 
 /** Build the real provider for live runs. Throws on a missing key. */
@@ -147,7 +163,33 @@ export async function main(
   }
 
   process.stdout.write(formatRun(reports) + '\n');
-  return reports.every((r) => r.ok) ? 0 : 1;
+
+  const baselinePath = env.GEAS_VERIFY_BASELINE ?? DEFAULT_BASELINE_PATH;
+  const scenariosOk = reports.every((r) => r.ok);
+
+  if (opts.rebaseBaseline) {
+    const previous = loadBaseline(baselinePath);
+    saveBaseline(baselineFromReports(reports, { previous }), baselinePath);
+    process.stdout.write(
+      `\n[cost-regression] rebased baseline → ${baselinePath} ` +
+        `(${reports.length} scenario(s))\n`,
+    );
+    const zero = reports.filter((r) => r.totalCostUsd === 0).map((r) => r.scenario);
+    if (zero.length > 0) {
+      process.stdout.write(
+        `[cost-regression] WARNING: ${zero.length} scenario(s) recorded $0 ` +
+          `(${zero.join(', ')}) — looks keyless. Set GEAS_LIVE_MCP_URL + an API ` +
+          `key to capture real costs before committing the baseline.\n`,
+      );
+    }
+    // A rebase still surfaces scenario failures, but does not run the cost gate
+    // (we just overwrote what it would compare against).
+    return scenariosOk ? 0 : 1;
+  }
+
+  const cost = checkCostRegression(reports, loadBaseline(baselinePath));
+  process.stdout.write('\n' + formatCostRegression(cost) + '\n');
+  return scenariosOk && cost.ok ? 0 : 1;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

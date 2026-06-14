@@ -19,6 +19,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:retry": "vitest run --config vitest.integration.config.ts tests/integration/retry-layer.live.test.ts",
     "test:verify": "tsx src/verify/cli.ts",
+    "verify:rebase-baseline": "tsx src/verify/cli.ts --rebase-baseline",
     "lint": "tsc --noEmit",
     "repl": "tsx src/repl/cli.ts",
     "scenario": "tsx src/scenarios/cli.ts",
