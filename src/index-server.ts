@@ -50,8 +50,9 @@
  *   - Not multi-user OAuth — that's #588, still `needs-niall`. We use
  *     `StaticDevVerifier(GEAS_DEV_UID)` for the milestone.
  *   - Not Cloud Run deploy — that's #590. We bind to `GEAS_AGENT_PORT` on
- *     all interfaces. No structured JSON logging, no readiness checks
- *     beyond `GET /healthz` (already in `server.ts`).
+ *     all interfaces. No readiness checks beyond `GET /healthz` (already in
+ *     `server.ts`). Structured JSON logging landed in #680 — runtime logs go
+ *     through `src/logging/logger.ts` (JSON to stdout, pretty in local dev).
  *   - **Persistence.** As of #732 each completed turn is written via
  *     `ConversationStore.appendTurn(...)` so cross-restart `--session <id>`
  *     resume actually has prior turns to seed from. The factory holds a
@@ -63,6 +64,7 @@
 
 import process from 'node:process';
 
+import { logger } from './logging/logger.js';
 import { AnthropicProvider } from './llm/anthropic.js';
 import { GeminiProvider } from './llm/gemini.js';
 import { type LlmProvider, type LlmToolDef } from './llm/provider.js';
@@ -264,7 +266,7 @@ export async function bootServer(cfg: ServerBootConfig): Promise<BootedServer> {
       devUid: cfg.devUid,
       bearerToken: cfg.bearerToken,
       onWarning: (msg, detail) =>
-        console.warn(`[geas-agent][mcp] ${msg}`, detail ?? ''),
+        logger.warn('mcp-warning', { message: msg, detail }),
     });
     const conn = await mcp.connect();
     if (!conn.ok) {
@@ -424,10 +426,11 @@ async function resumeLatestSession(input: {
       sessionId: latest.sessionId,
     });
   } catch (e) {
-    console.warn(
-      `[geas-agent] resume failed for ${input.uid}:${input.characterId}:`,
-      (e as Error).message,
-    );
+    logger.warn('session-resume-failed', {
+      uid: input.uid,
+      characterId: input.characterId,
+      err: e as Error,
+    });
   }
 }
 
@@ -455,13 +458,16 @@ export async function main(): Promise<void> {
   // they're talking to — important during the #585 provider-shake-out.
   const modelLabel =
     cfg.llmProvider === 'gemini' ? 'gemini-2.5-flash' : 'claude-haiku-4-5';
-  console.log(
-    `[geas-agent] READY mcp=${cfg.mcpUrl} uid=${cfg.devUid} port=${booted.port} ` +
-      `provider=${cfg.llmProvider} model=${modelLabel} ` +
-      `store=${cfg.useFirestore ? 'firestore' : 'memory'}`,
-  );
+  logger.info('server-ready', {
+    mcpUrl: cfg.mcpUrl,
+    uid: cfg.devUid,
+    port: booted.port,
+    provider: cfg.llmProvider,
+    model: modelLabel,
+    store: cfg.useFirestore ? 'firestore' : 'memory',
+  });
   const shutdown = async (sig: string) => {
-    console.log(`[geas-agent] received ${sig}, shutting down`);
+    logger.info('server-shutdown', { signal: sig });
     try {
       await booted.close();
     } finally {
@@ -474,7 +480,7 @@ export async function main(): Promise<void> {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
-    console.error('[geas-agent] fatal:', e);
+    logger.error('fatal', { err: e as Error });
     process.exit(1);
   });
 }
