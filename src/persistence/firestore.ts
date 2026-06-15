@@ -19,6 +19,8 @@ import {
 } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
+import { logger } from '../logging/logger.js';
+
 let app: App | null = null;
 let db: Firestore | null = null;
 
@@ -38,19 +40,15 @@ export function initFirestore(): Firestore {
     (emulator ? 'geas-rpg' : undefined);
 
   if (emulator) {
-    console.log(
-      `[geas-agent] Firestore: emulator at ${emulator} (project ${projectId})`,
-    );
+    logger.info('firestore-init', { mode: 'emulator', emulator, projectId });
     app = initializeApp({ projectId });
   } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    console.log('[geas-agent] Firestore: service account credentials');
+    logger.info('firestore-init', { mode: 'service-account' });
     app = initializeApp({
       credential: cert(process.env.GOOGLE_APPLICATION_CREDENTIALS),
     });
   } else if (projectId) {
-    console.log(
-      `[geas-agent] Firestore: Application Default Credentials (project ${projectId})`,
-    );
+    logger.info('firestore-init', { mode: 'adc', projectId });
     app = initializeApp({ projectId });
   } else {
     throw new Error(
